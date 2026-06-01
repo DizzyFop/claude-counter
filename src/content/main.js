@@ -6,32 +6,12 @@
 	CC.__started = true;
 
 	const USAGE_POLL_MS = 30 * 1000;
+	const site = CC.sites?.current?.();
+	if (!site) return;
 
-	function getConversationId() {
-		const match = window.location.pathname.match(/\/chat\/([^/?]+)/);
-		return match ? match[1] : null;
-	}
-
-	function getOrgIdFromCookie() {
-		try {
-			return document.cookie
-				.split('; ')
-				.find((row) => row.startsWith('lastActiveOrg='))
-				?.split('=')[1] || null;
-		} catch {
-			return null;
-		}
-	}
-
-	/**
-	 * Wait for an element to appear in the DOM using MutationObserver.
-	 * More efficient than polling - reacts immediately when element appears.
-	 * @param {string} selector - CSS selector
-	 * @param {number} [timeoutMs] - Optional timeout in ms. Returns null if timeout expires.
-	 */
-	function waitForElement(selector, timeoutMs) {
+	function waitForElement(getElement, timeoutMs) {
 		return new Promise((resolve) => {
-			const existing = document.querySelector(selector);
+			const existing = getElement();
 			if (existing) {
 				resolve(existing);
 				return;
@@ -39,7 +19,7 @@
 
 			let timeoutId;
 			const observer = new MutationObserver(() => {
-				const el = document.querySelector(selector);
+				const el = getElement();
 				if (el) {
 					if (timeoutId) clearTimeout(timeoutId);
 					observer.disconnect();
@@ -58,7 +38,7 @@
 		});
 	}
 
-	CC.waitForElement = waitForElement;
+	CC.waitForElement = (selector, timeoutMs) => waitForElement(() => document.querySelector(selector), timeoutMs);
 
 	function observeUrlChanges(callback) {
 		let lastPath = window.location.pathname;
@@ -71,9 +51,7 @@
 			}
 		};
 
-		// Listen for custom event from bridge (history methods wrapped early)
 		window.addEventListener('cc:urlchange', fireIfChanged);
-		// Also popstate for back/forward buttons
 		window.addEventListener('popstate', fireIfChanged);
 
 		return () => {
@@ -82,7 +60,7 @@
 		};
 	}
 
-	function parseUsageFromUsageEndpoint(raw) {
+	function parseClaudeUsageEndpoint(raw) {
 		if (!raw || typeof raw !== 'object') return null;
 
 		const normalizeWindow = (w, hours) => {
@@ -100,7 +78,7 @@
 		return { five_hour: fiveHour, seven_day: sevenDay };
 	}
 
-	function parseUsageFromMessageLimit(raw) {
+	function parseClaudeMessageLimit(raw) {
 		if (!raw?.windows || typeof raw.windows !== 'object') return null;
 
 		const normalizeWindow = (w, hours) => {
@@ -120,25 +98,208 @@
 		return { five_hour: fiveHour, seven_day: sevenDay };
 	}
 
+	function getCaseInsensitive(obj, names) {
+		if (!obj || typeof obj !== 'object') return undefined;
+		for (const [key, value] of Object.entries(obj)) {
+			const normalized = key.toLowerCase();
+			if (names.some((name) => normalized === name || normalized.includes(name))) return value;
+		}
+		return undefined;
+	}
+
+	function toFiniteNumber(value) {
+		if (typeof value === 'number' && Number.isFinite(value)) return value;
+		if (typeof value === 'string') {
+			const parsed = Number(value.replace(/,/g, '').trim());
+			if (Number.isFinite(parsed)) return parsed;
+		}
+		return null;
+	}
+
+	function toResetIso(value, key = '') {
+		if (typeof value === 'string') {
+			const ms = Date.parse(value);
+			return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+		}
+		if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+
+		const normalizedKey = key.toLowerCase();
+		if (normalizedKey.includes('ms') || normalizedKey.includes('millisecond')) {
+			return new Date(Date.now() + value).toISOString();
+		}
+		if (normalizedKey.includes('after') || value < 100000000) {
+			return new Date(Date.now() + value * 1000).toISOString();
+		}
+		if (value > 1000000000000) return new Date(value).toISOString();
+		if (value > 1000000000) return new Date(value * 1000).toISOString();
+		return null;
+	}
+
+	function findResetIso(obj) {
+		if (!obj || typeof obj !== 'object') return null;
+		for (const [key, value] of Object.entries(obj)) {
+			const k = key.toLowerCase();
+			if (!k.includes('reset') && !k.includes('resets')) continue;
+			const iso = toResetIso(value, key);
+			if (iso) return iso;
+		}
+		return null;
+	}
+
+	function inferWindowHours(obj, path) {
+		const explicitHours = toFiniteNumber(getCaseInsensitive(obj, ['window_hours', 'hours']));
+		if (explicitHours && explicitHours > 0) return explicitHours;
+
+		const seconds = toFiniteNumber(getCaseInsensitive(obj, ['window_seconds', 'period_seconds']));
+		if (seconds && seconds > 0) return seconds / 3600;
+
+		const p = path.toLowerCase();
+		if (p.includes('weekly') || p.includes('week') || p.includes('7d')) return 24 * 7;
+		if (p.includes('daily') || p.includes('day') || p.includes('24h')) return 24;
+		const hourMatch = p.match(/(\d+)\s*h/);
+		if (hourMatch) return Number(hourMatch[1]);
+		return null;
+	}
+
+	function normalizeExactChatGptWindow(obj, path) {
+		if (!obj || typeof obj !== 'object') return null;
+
+		let utilization = toFiniteNumber(getCaseInsensitive(obj, ['utilization', 'usage_percent', 'used_percent', 'percent', 'percentage']));
+		if (typeof utilization === 'number') {
+			utilization = utilization <= 1 ? utilization * 100 : utilization;
+		} else {
+			const limit = toFiniteNumber(getCaseInsensitive(obj, ['message_cap', 'message_limit', 'limit', 'max', 'total']));
+			const remaining = toFiniteNumber(getCaseInsensitive(obj, ['remaining', 'remaining_messages']));
+			const used = toFiniteNumber(getCaseInsensitive(obj, ['used', 'current', 'count']));
+			if (typeof limit === 'number' && limit > 0) {
+				if (typeof used === 'number') {
+					utilization = (used / limit) * 100;
+				} else if (typeof remaining === 'number') {
+					utilization = ((limit - remaining) / limit) * 100;
+				}
+			}
+		}
+
+		const resets_at = findResetIso(obj);
+		if (typeof utilization !== 'number' || !Number.isFinite(utilization) || !resets_at) return null;
+
+		const window_hours = inferWindowHours(obj, path);
+		return {
+			utilization: Math.max(0, Math.min(100, utilization)),
+			resets_at,
+			window_hours,
+			label: window_hours && window_hours >= 24 * 7 ? 'Weekly' : 'Session'
+		};
+	}
+
+	function collectChatGptWindows(value, path = '', depth = 0, out = [], seen = new WeakSet()) {
+		if (!value || typeof value !== 'object' || depth > 8 || seen.has(value)) return out;
+		seen.add(value);
+
+		const normalized = normalizeExactChatGptWindow(value, path);
+		if (normalized) out.push(normalized);
+
+		for (const [key, child] of Object.entries(value)) {
+			if (child && typeof child === 'object') {
+				collectChatGptWindows(child, path ? `${path}.${key}` : key, depth + 1, out, seen);
+			}
+		}
+		return out;
+	}
+
+	function parseChatGptUsageSignal(raw) {
+		const values = raw?.snapshots?.map((snapshot) => snapshot.payload).filter(Boolean) || [raw];
+		const windows = values.flatMap((value) => collectChatGptWindows(value));
+		if (!windows.length) return null;
+
+		const weekly = windows.find((w) => w.window_hours && w.window_hours >= 24 * 7) || null;
+		const session =
+			windows.find((w) => !w.window_hours || w.window_hours < 24 * 7) ||
+			(!weekly ? windows[0] : null);
+
+		if (!session && !weekly) return null;
+		return {
+			five_hour: session || null,
+			seven_day: weekly || null
+		};
+	}
+
+	function formatUsageReset(iso) {
+		if (!iso) return '';
+		const ms = Date.parse(iso);
+		if (!Number.isFinite(ms)) return '';
+		const diffMs = ms - Date.now();
+		if (diffMs <= 0) return 'reset now';
+		const minutes = Math.round(diffMs / 60000);
+		if (minutes < 60) return `resets in ${minutes}m`;
+		const hours = Math.floor(minutes / 60);
+		const remMinutes = minutes % 60;
+		if (hours < 24) return `resets in ${hours}h ${remMinutes}m`;
+		const days = Math.floor(hours / 24);
+		return `resets in ${days}d ${hours % 24}h`;
+	}
+
+	function collectChatGptUsageNotes(value, path = '', depth = 0, out = [], seen = new WeakSet()) {
+		if (!value || typeof value !== 'object' || depth > 8 || seen.has(value)) return out;
+		seen.add(value);
+
+		const remaining = toFiniteNumber(getCaseInsensitive(value, ['remaining', 'remaining_messages', 'remaining_uses', 'uses_remaining']));
+		const limit = toFiniteNumber(getCaseInsensitive(value, ['message_cap', 'message_limit', 'limit', 'max', 'total', 'total_uses']));
+		const used = toFiniteNumber(getCaseInsensitive(value, ['used', 'current', 'count', 'used_count', 'used_uses']));
+		const label =
+			getCaseInsensitive(value, ['feature_name', 'model_slug', 'model', 'name', 'slug']) ||
+			path.split('.').filter(Boolean).pop() ||
+			'usage';
+		const resetText = formatUsageReset(findResetIso(value));
+
+		if (typeof remaining === 'number') {
+			const limitText = typeof limit === 'number' ? `/${limit}` : '';
+			const text = `${String(label).replace(/_/g, ' ')}: ${remaining}${limitText} remaining${resetText ? ` · ${resetText}` : ''}`;
+			if (!out.includes(text)) out.push(text);
+		} else if (typeof used === 'number' && typeof limit === 'number' && limit > 0) {
+			const text = `${String(label).replace(/_/g, ' ')}: ${used}/${limit} used${resetText ? ` · ${resetText}` : ''}`;
+			if (!out.includes(text)) out.push(text);
+		}
+
+		for (const [key, child] of Object.entries(value)) {
+			if (child && typeof child === 'object') {
+				collectChatGptUsageNotes(child, path ? `${path}.${key}` : key, depth + 1, out, seen);
+			}
+		}
+		return out;
+	}
+
+	function parseChatGptUsageStatus(raw) {
+		const values = raw?.snapshots?.map((snapshot) => snapshot.payload).filter(Boolean) || [raw];
+		const notes = values.flatMap((value) => collectChatGptUsageNotes(value));
+		if (notes.length) return `Usage: ${notes.slice(0, 2).join(' · ')}`;
+		return '';
+	}
+
 	let currentConversationId = null;
 	let currentOrgId = null;
 
-	let usageState = null; // last snapshot
-	let usageResetMs = { five_hour: null, seven_day: null }; // cached parsed timestamps
+	let usageState = null;
+	let usageResetMs = { five_hour: null, seven_day: null };
 	let lastUsageSseMs = 0;
 	let usageFetchInFlight = false;
 	let lastUsageUpdateMs = 0;
+	let lastStructuredConversationId = null;
+	let lastStructuredConversationMs = 0;
+	let visibleFallbackTimer = null;
 	const rolloverHandledForResetMs = { five_hour: null, seven_day: null };
 
 	const ui = new CC.ui.CounterUI({
-		onUsageRefresh: async () => {
-			await refreshUsage();
-		}
+		site,
+		onUsageRefresh: async () => refreshUsage()
 	});
 	ui.initialize();
 
-	// Bridge must be ready before we can make requests
 	const bridgeReady = CC.injectBridgeOnce();
+
+	function sameSite(payload) {
+		return !payload?.site || payload.site === site.id;
+	}
 
 	function applyUsageUpdate(normalized, source) {
 		if (!normalized) return;
@@ -146,7 +307,6 @@
 		usageState = normalized;
 		lastUsageUpdateMs = now;
 		if (source === 'sse') lastUsageSseMs = now;
-		// Cache parsed timestamps to avoid Date.parse() every tick
 		usageResetMs.five_hour = normalized.five_hour?.resets_at ? Date.parse(normalized.five_hour.resets_at) : null;
 		usageResetMs.seven_day = normalized.seven_day?.resets_at ? Date.parse(normalized.seven_day.resets_at) : null;
 		ui.setUsage(normalized);
@@ -160,7 +320,29 @@
 
 	async function refreshUsage() {
 		await bridgeReady;
-		const orgId = currentOrgId || getOrgIdFromCookie();
+		if (site.id === 'chatgpt') {
+			if (usageFetchInFlight) return;
+			usageFetchInFlight = true;
+			let raw;
+			try {
+				raw = await CC.bridge.requestChatGptUsage();
+			} catch {
+				ui.setUsageStatus('');
+				return;
+			} finally {
+				usageFetchInFlight = false;
+			}
+
+			const parsed = parseChatGptUsageSignal(raw);
+			if (parsed) {
+				applyUsageUpdate(parsed, 'usage');
+			} else {
+				ui.setUsageStatus(parseChatGptUsageStatus(raw));
+			}
+			return;
+		}
+
+		const orgId = currentOrgId || site.getOrgId?.();
 		if (!orgId) return;
 		updateOrgIdIfNeeded(orgId);
 
@@ -175,8 +357,7 @@
 			usageFetchInFlight = false;
 		}
 
-		const parsed = parseUsageFromUsageEndpoint(raw);
-		applyUsageUpdate(parsed, 'usage');
+		applyUsageUpdate(parseClaudeUsageEndpoint(raw), 'usage');
 	}
 
 	async function refreshConversation() {
@@ -186,142 +367,171 @@
 			return;
 		}
 
-		const orgId = currentOrgId || getOrgIdFromCookie();
-		if (!orgId) return;
-		updateOrgIdIfNeeded(orgId);
+		if (site.id === 'claude') {
+			const orgId = currentOrgId || site.getOrgId?.();
+			if (!orgId) return;
+			updateOrgIdIfNeeded(orgId);
+
+			try {
+				await CC.bridge.requestConversation(orgId, currentConversationId);
+			} catch {
+				// ignore
+			}
+			return;
+		}
 
 		try {
-			await CC.bridge.requestConversation(orgId, currentConversationId);
+			await CC.bridge.requestChatGptConversation(currentConversationId);
 		} catch {
-			// ignore
+			scheduleVisibleChatGptFallback();
 		}
 	}
 
-	function handleGenerationStart() {
-		if (!currentConversationId) return;
-		ui.setPendingCache(true);
+	function scheduleVisibleChatGptFallback(delayMs = 1200) {
+		if (site.id !== 'chatgpt' || !currentConversationId) return;
+		if (visibleFallbackTimer) clearTimeout(visibleFallbackTimer);
+		visibleFallbackTimer = setTimeout(async () => {
+			visibleFallbackTimer = null;
+			if (lastStructuredConversationId === currentConversationId && Date.now() - lastStructuredConversationMs < 5000) return;
+			const metrics = await CC.tokens.computeVisibleChatGptMetrics();
+			if (metrics.trunkMessageCount > 0) ui.setConversationMetrics(metrics);
+		}, delayMs);
 	}
 
-	async function handleConversationPayload({ orgId, conversationId, data }) {
+	function handleGenerationStart(payload) {
+		if (!sameSite(payload)) return;
+		if (site.id === 'claude') {
+			if (!currentConversationId) return;
+			ui.setPendingCache(true);
+		}
+		if (site.id === 'chatgpt') {
+			if (currentConversationId) scheduleVisibleChatGptFallback(2500);
+		}
+	}
+
+	function handleGenerationComplete(payload) {
+		if (!sameSite(payload) || site.id !== 'chatgpt') return;
+		refreshConversation();
+		refreshUsage();
+		scheduleVisibleChatGptFallback(1800);
+	}
+
+	async function handleConversationPayload({ site: payloadSite, orgId, conversationId, data }) {
+		if (payloadSite && payloadSite !== site.id) return;
 		if (!conversationId || conversationId !== currentConversationId) return;
 		updateOrgIdIfNeeded(orgId);
 		if (!data) return;
 
-		const metrics = await CC.tokens.computeConversationMetrics(data);
-		ui.setConversationMetrics({ totalTokens: metrics.totalTokens, cachedUntil: metrics.cachedUntil });
+		const metrics = await CC.tokens.computeConversationMetrics(data, { siteId: site.id });
+		if (site.id === 'chatgpt') {
+			lastStructuredConversationId = conversationId;
+			lastStructuredConversationMs = Date.now();
+		}
+		ui.setConversationMetrics(metrics);
 	}
 
-	function handleMessageLimit(messageLimit) {
-		const parsed = parseUsageFromMessageLimit(messageLimit);
-		applyUsageUpdate(parsed, 'sse');
+	function handleClaudeMessageLimit(messageLimit) {
+		if (site.id !== 'claude') return;
+		applyUsageUpdate(parseClaudeMessageLimit(messageLimit), 'sse');
+	}
+
+	function handleChatGptUsageSignal(raw) {
+		if (site.id !== 'chatgpt') return;
+		const parsed = parseChatGptUsageSignal(raw);
+		if (parsed) applyUsageUpdate(parsed, 'sse');
+		else if (!usageState) ui.setUsageStatus(parseChatGptUsageStatus(raw));
 	}
 
 	CC.bridge.on('cc:generation_start', handleGenerationStart);
+	CC.bridge.on('cc:generation_complete', handleGenerationComplete);
 	CC.bridge.on('cc:conversation', handleConversationPayload);
-	CC.bridge.on('cc:message_limit', handleMessageLimit);
+	CC.bridge.on('cc:message_limit', handleClaudeMessageLimit);
+	CC.bridge.on('cc:chatgpt_usage_signal', handleChatGptUsageSignal);
 
 	async function handleUrlChange() {
-		currentConversationId = getConversationId();
+		const previousConversationId = currentConversationId;
+		currentConversationId = site.getConversationId?.() || null;
 
-		// Attach usage line and header independently - they have different anchor elements
-		// and CHAT_MENU_TRIGGER doesn't exist on home/new pages
-		waitForElement(CC.DOM.MODEL_SELECTOR_DROPDOWN, 60000).then((el) => {
+		ui.attach();
+		waitForElement(() => site.findUsageAnchor?.(), 60000).then((el) => {
 			if (el) ui.attachUsageLine();
 		});
-		waitForElement(CC.DOM.CHAT_MENU_TRIGGER, 60000).then((el) => {
+		waitForElement(() => site.findHeaderAnchor?.(), 60000).then((el) => {
 			if (el) ui.attachHeader();
 		});
+
+		if (previousConversationId !== currentConversationId) {
+			lastStructuredConversationId = null;
+			lastStructuredConversationMs = 0;
+		}
 
 		if (!currentConversationId) {
 			ui.setConversationMetrics();
 			return;
 		}
 
-		// Best-effort orgId from cookie.
-		updateOrgIdIfNeeded(getOrgIdFromCookie());
-
+		updateOrgIdIfNeeded(site.getOrgId?.());
 		await refreshConversation();
 
-		// Usage is org-level, not conversation-level. Only fetch on first load or if stale.
-		if (!usageState) await refreshUsage();
+		if ((site.id === 'claude' || site.id === 'chatgpt') && !usageState) await refreshUsage();
+		if (site.id === 'chatgpt') scheduleVisibleChatGptFallback();
 	}
 
 	const unobserveUrl = observeUrlChanges(handleUrlChange);
 	window.addEventListener('beforeunload', unobserveUrl);
 
-	// Refresh on branch navigation - watch for the branch indicator to change
-	let branchObserver = null;
 	document.addEventListener('click', (e) => {
 		if (!currentConversationId) return;
-		const btn = e.target.closest('button[aria-label="Previous"], button[aria-label="Next"]');
+		const btn = e.target.closest('button[aria-label="Previous"], button[aria-label="Next"], button[aria-label*="Retry"], button[aria-label*="Regenerate"]');
 		if (!btn) return;
-
-		// Find the branch indicator span (matches "X / Y" pattern) near the clicked button
-		const container = btn.closest('.inline-flex');
-		const spans = container?.querySelectorAll('span') || [];
-		const indicator = Array.from(spans).find((s) => /^\d+\s*\/\s*\d+$/.test(s.textContent.trim()));
-		if (!indicator) return;
-
-		const originalText = indicator.textContent;
-
-		// Clean up any existing observer
-		if (branchObserver) branchObserver.disconnect();
-
-		// Watch for the indicator text to change (with cleanup timeout)
-		branchObserver = new MutationObserver(() => {
-			if (indicator.textContent !== originalText) {
-				branchObserver.disconnect();
-				branchObserver = null;
-				refreshConversation();
-			}
-		});
-
-		branchObserver.observe(indicator, { childList: true, characterData: true, subtree: true });
-
-		// Clean up if nothing changes after 60 seconds
-		setTimeout(() => {
-			if (branchObserver) {
-				branchObserver.disconnect();
-				branchObserver = null;
-			}
-		}, 60000);
+		setTimeout(() => refreshConversation(), 800);
+		if (site.id === 'chatgpt') scheduleVisibleChatGptFallback(1600);
 	});
 
-	// Initial attach + fetches
 	handleUrlChange();
 
 	function tick() {
 		ui.tick();
-
-		// Refresh usage when a window ends (5h / 7d). SSE won't fire at rollover unless a message is sent.
 		const now = Date.now();
 
-		if (usageResetMs.five_hour && now >= usageResetMs.five_hour && rolloverHandledForResetMs.five_hour !== usageResetMs.five_hour) {
-			rolloverHandledForResetMs.five_hour = usageResetMs.five_hour;
-			refreshUsage();
-		}
-		if (usageResetMs.seven_day && now >= usageResetMs.seven_day && rolloverHandledForResetMs.seven_day !== usageResetMs.seven_day) {
-			rolloverHandledForResetMs.seven_day = usageResetMs.seven_day;
-			refreshUsage();
-		}
+		if (site.id === 'claude') {
+			if (usageResetMs.five_hour && now >= usageResetMs.five_hour && rolloverHandledForResetMs.five_hour !== usageResetMs.five_hour) {
+				rolloverHandledForResetMs.five_hour = usageResetMs.five_hour;
+				refreshUsage();
+			}
+			if (usageResetMs.seven_day && now >= usageResetMs.seven_day && rolloverHandledForResetMs.seven_day !== usageResetMs.seven_day) {
+				rolloverHandledForResetMs.seven_day = usageResetMs.seven_day;
+				refreshUsage();
+			}
 
-		// Optional hourly safety refresh.
-		const ONE_HOUR_MS = 60 * 60 * 1000;
-		const sseAge = now - lastUsageSseMs;
-		const anyAge = now - lastUsageUpdateMs;
-		if (!document.hidden && sseAge > ONE_HOUR_MS && anyAge > ONE_HOUR_MS) {
-			refreshUsage();
+			const ONE_HOUR_MS = 60 * 60 * 1000;
+			const sseAge = now - lastUsageSseMs;
+			const anyAge = now - lastUsageUpdateMs;
+			if (!document.hidden && sseAge > ONE_HOUR_MS && anyAge > ONE_HOUR_MS) {
+				refreshUsage();
+			}
 		}
 	}
 
-	// Keep countdowns + markers updated.
 	setInterval(tick, 1000);
 
-	// Periodic usage refresh so bars stay current when this tab is idle.
-	// SSE only fires for this tab's own messages, so usage from mobile / API / other tabs
-	// otherwise wouldn't surface until the hourly safety net in tick().
-	setInterval(() => {
-		if (document.hidden) return;
+	if (site.id === 'claude') {
+		setInterval(() => {
+			if (document.hidden) return;
+			refreshUsage();
+		}, USAGE_POLL_MS);
+	}
+
+	if (site.id === 'chatgpt') {
+		ui.setUsageStatus('');
 		refreshUsage();
-	}, USAGE_POLL_MS);
+		setInterval(() => {
+			if (document.hidden || lastStructuredConversationId === currentConversationId) return;
+			scheduleVisibleChatGptFallback(0);
+		}, 5000);
+		setInterval(() => {
+			if (document.hidden) return;
+			refreshUsage();
+		}, 60 * 1000);
+	}
 })();

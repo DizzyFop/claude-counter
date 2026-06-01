@@ -1,44 +1,48 @@
-# Claude Counter
+# AI Counter
 
-A minimal browser extension that shows token count, cache timer, and usage bars on claude.ai.
+A minimal browser extension that shows approximate token counts and native usage signals on Claude and ChatGPT.
 
-![Claude Counter screenshot](./screenshot.png)
+![AI Counter screenshot](./screenshot.png)
 
 ## Features
 
-- **Token count** — Approximate token count for the current conversation, with a mini progress bar against the 200k context limit
-- **Cache timer** — Countdown showing how long the conversation remains cached (cheaper to continue)
-- **Usage bars** — Session (5-hour) and weekly (7-day) usage from Claude's native API, with progress bars and reset countdowns (more accurate than the rounded /usage page)
+- **Claude token count** — Approximate token count for the current conversation, with a mini progress bar against the 200k context limit
+- **Claude cache timer** — Countdown showing how long the conversation remains cached (cheaper to continue)
+- **Claude usage bars** — Session (5-hour) and weekly (7-day) usage from Claude's native API, with progress bars and reset countdowns
+- **ChatGPT token count** — Approximate token count for the active conversation branch, using structured conversation data when available and visible messages as a fallback
+- **ChatGPT context status** — Context progress appears only when ChatGPT exposes an exact context window for the current model
+- **ChatGPT usage bars** — Session/weekly bars appear only when ChatGPT exposes exact native usage and reset signals
 
 ## Installation
 
 **Chrome / Edge / Chromium**
 
-1. Download [`claude-counter-0.4.3.zip`](../../releases/download/v0.4.3/claude-counter-0.4.3.zip)
+1. Download [`ai-counter-0.5.0.zip`](../../releases/download/v0.5.0/ai-counter-0.5.0.zip)
 2. Go to `chrome://extensions` and enable **Developer mode**
 3. Drag and drop the zip onto the page
 
 **Firefox**
 
-1. Download [`claude-counter-0.4.3.xpi`](../../releases/download/v0.4.3/claude-counter-0.4.3.xpi)
+1. Download [`ai-counter-0.5.0.xpi`](../../releases/download/v0.5.0/ai-counter-0.5.0.xpi)
 2. Drag it into any Firefox window and click **Add**
 
 **Userscript**
 
-1. Install the userscript from [`claude-counter.user.js`](./userscript/claude-counter.user.js)
+1. The userscript remains Claude-only: [`claude-counter.user.js`](./userscript/claude-counter.user.js)
 
 ## How it works
 
-- Intercepts Claude's API responses to read conversation data and usage info
+- Intercepts Claude and ChatGPT page responses locally to read conversation data and exact native usage signals when available
 - Uses a vendored tokenizer (`o200k_base`) for approximate token counting
-- Uses Claude’s `/usage` plus live SSE `message_limit` data; the SSE provides exact, unrounded utilization fractions, so the progress bars are more accurate than the rounded percentages shown on Claude’s native /usage page
+- Uses Claude’s `/usage` plus live SSE `message_limit` data; the SSE provides exact, unrounded utilization fractions
+- Uses ChatGPT structured conversation payloads when available, and falls back to visible message text without estimating usage limits
 - Watches for DOM changes to inject UI elements as you navigate
 
 ## Privacy
 
 - All data stays local — no external servers, no tracking
 - Reads your `lastActiveOrg` cookie to query Claude's `/usage` endpoint
-- Makes requests only to `claude.ai`
+- Makes requests only to the current supported site (`claude.ai`, `chatgpt.com`, or `chat.openai.com`)
 
 ## Credits
 

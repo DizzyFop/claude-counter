@@ -33,6 +33,27 @@
 		return `${days}d ${remHours}h`;
 	}
 
+	function formatCompactTokens(tokens) {
+		if (tokens >= 1000000) return `${Math.round(tokens / 100000) / 10}m`;
+		if (tokens >= 1000) return `${Math.round(tokens / 1000).toLocaleString()}k`;
+		return tokens.toLocaleString();
+	}
+
+	function getUsageLabel(windowData, fallback) {
+		if (windowData?.label) return windowData.label;
+		if (windowData?.window_hours) {
+			if (windowData.window_hours === 24 * 7) return 'Weekly';
+			if (windowData.window_hours === 24) return 'Daily';
+			return `${windowData.window_hours}h`;
+		}
+		return fallback;
+	}
+
+	function getWindowStartMs(windowData, resetMs, fallbackHours) {
+		const hours = windowData?.window_hours || fallbackHours;
+		return resetMs && hours ? resetMs - hours * 60 * 60 * 1000 : null;
+	}
+
 	function setupTooltip(element, tooltip, { topOffset = 10 } = {}) {
 		if (!element || !tooltip) return;
 		if (element.hasAttribute('data-tooltip-setup')) return;
@@ -97,7 +118,8 @@
 	}
 
 	class CounterUI {
-		constructor({ onUsageRefresh } = {}) {
+		constructor({ site, onUsageRefresh } = {}) {
+			this.site = site || CC.sites?.current?.() || CC.sites?.all?.claude || {};
 			this.onUsageRefresh = onUsageRefresh || null;
 
 			this.headerContainer = null;
@@ -126,11 +148,14 @@
 			this.refreshingUsage = false;
 
 			this.domObserver = null;
+			this.floatingContainer = null;
+			this._floatingResizeHandler = null;
+			this._floatingPositionTimer = null;
 		}
 
 		getProgressChrome() {
 			const root = document.documentElement;
-			const modeDark = root.dataset?.mode === 'dark';
+			const modeDark = root.dataset?.mode === 'dark' || root.classList.contains('dark') || root.style.colorScheme === 'dark';
 			const modeLight = root.dataset?.mode === 'light';
 			const isDark = modeDark && !modeLight;
 
@@ -161,7 +186,7 @@
 		initialize() {
 			// Header container (tokens + cache timer)
 			this.headerContainer = document.createElement('div');
-			this.headerContainer.className = 'text-text-500 text-xs !px-1 cc-header';
+			this.headerContainer.className = `text-text-500 text-xs !px-1 cc-header cc-site-${this.site.id || 'unknown'}`;
 
 			this.headerDisplay = document.createElement('span');
 			this.headerDisplay.className = 'cc-headerItem';
@@ -176,6 +201,7 @@
 
 			// Usage line (session + weekly)
 			this._initUsageLine();
+			if (this.site.id === 'chatgpt') this._ensureFloatingContainer();
 
 			this._setupTooltips();
 			this._observeDom();
@@ -185,41 +211,105 @@
 		_observeTheme() {
 			// Watch for theme changes (data-mode attribute on <html>)
 			const observer = new MutationObserver(() => this.refreshProgressChrome());
-			observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-mode'] });
+			observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-mode', 'class', 'style'] });
 		}
 
 		_observeDom() {
-			// Track pending reattach attempts independently
-			let usageReattachPending = false;
-			let headerReattachPending = false;
+			let reattachTimer = null;
 
 			this.domObserver = new MutationObserver(() => {
+				if (this.site.id === 'chatgpt') this._scheduleFloatingPositionUpdate();
 				const usageMissing = this.usageLine && !document.contains(this.usageLine);
 				const headerMissing = !document.contains(this.headerContainer);
 
-				if (usageMissing && !usageReattachPending) {
-					usageReattachPending = true;
-					CC.waitForElement(CC.DOM.MODEL_SELECTOR_DROPDOWN, 60000).then((el) => {
-						usageReattachPending = false;
-						if (el) this.attachUsageLine();
-					});
-				}
-
-				if (headerMissing && !headerReattachPending) {
-					headerReattachPending = true;
-					CC.waitForElement(CC.DOM.CHAT_MENU_TRIGGER, 60000).then((el) => {
-						headerReattachPending = false;
-						if (el) this.attachHeader();
-					});
-				}
+				if (!usageMissing && !headerMissing) return;
+				if (reattachTimer) return;
+				reattachTimer = setTimeout(() => {
+					reattachTimer = null;
+					this.attach();
+					this._updateFloatingPosition();
+				}, 250);
 			});
 			this.domObserver.observe(document.body, { childList: true, subtree: true });
+		}
+
+		_scheduleFloatingPositionUpdate(delayMs = 80) {
+			if (this.site.id !== 'chatgpt' || !this.floatingContainer || this._floatingPositionTimer) return;
+			this._floatingPositionTimer = setTimeout(() => {
+				this._floatingPositionTimer = null;
+				this._updateFloatingPosition();
+			}, delayMs);
+		}
+
+		_ensureFloatingContainer() {
+			if (this.site.id !== 'chatgpt') return null;
+			if (this.floatingContainer && document.contains(this.floatingContainer)) {
+				this._updateFloatingPosition();
+				return this.floatingContainer;
+			}
+
+			this.floatingContainer = document.createElement('div');
+			this.floatingContainer.className = 'cc-chatgptFloating';
+			document.body.appendChild(this.floatingContainer);
+			if (!this._floatingResizeHandler) {
+				this._floatingResizeHandler = () => this._updateFloatingPosition();
+				window.addEventListener('resize', this._floatingResizeHandler, { passive: true });
+				window.addEventListener('orientationchange', this._floatingResizeHandler, { passive: true });
+				window.addEventListener('scroll', () => this._scheduleFloatingPositionUpdate(0), { passive: true, capture: true });
+				window.visualViewport?.addEventListener?.('resize', this._floatingResizeHandler, { passive: true });
+				window.visualViewport?.addEventListener?.('scroll', this._floatingResizeHandler, { passive: true });
+			}
+			this._updateFloatingPosition();
+			return this.floatingContainer;
+		}
+
+		_findChatGptComposer() {
+			const prompt = document.querySelector(
+				'#prompt-textarea, textarea[name="prompt-textarea"], [contenteditable="true"][role="textbox"][aria-label*="Chat"]'
+			);
+			const fromPrompt = prompt?.closest?.('form[data-type="unified-composer"], form, [data-composer-surface]');
+			return (
+				fromPrompt?.closest?.('form[data-type="unified-composer"], form') ||
+				fromPrompt ||
+				document.querySelector('form[data-type="unified-composer"]') ||
+				document.querySelector('[data-composer-surface]')?.closest?.('form') ||
+				this.site.findUsageAnchor?.() ||
+				null
+			);
+		}
+
+		_updateFloatingPosition() {
+			if (this.site.id !== 'chatgpt' || !this.floatingContainer) return;
+			const composer = this._findChatGptComposer();
+			const composerRect = composer?.getBoundingClientRect?.();
+			const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+			const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+			const hasComposerRect =
+				composerRect &&
+				Number.isFinite(composerRect.width) &&
+				Number.isFinite(composerRect.left) &&
+				composerRect.width > 120;
+			const composerWidth = hasComposerRect ? composerRect.width : Math.min(760, viewportWidth - 32);
+			const desiredWidth = Math.min(Math.max(composerWidth, 520), viewportWidth - 32);
+			const bottom = hasComposerRect ? Math.max(12, Math.round(viewportHeight - composerRect.top + 10)) : 92;
+			const centerX = hasComposerRect
+				? Math.round(composerRect.left + composerRect.width / 2)
+				: Math.round(viewportWidth / 2);
+
+			this.floatingContainer.style.width = `${desiredWidth}px`;
+			this.floatingContainer.style.maxWidth = `${desiredWidth}px`;
+			this.floatingContainer.classList.add('cc-chatgptFloating--bottom');
+			this.floatingContainer.style.left = `${centerX}px`;
+			this.floatingContainer.style.right = '';
+			this.floatingContainer.style.top = '';
+			this.floatingContainer.style.bottom = `${bottom}px`;
+			this.floatingContainer.style.transform = 'translateX(-50%)';
 		}
 
 		_initUsageLine() {
 			this.usageLine = document.createElement('div');
 			this.usageLine.className =
-				'text-text-400 text-[11px] cc-usageRow cc-hidden flex flex-row items-center gap-3 w-full';
+				`text-text-400 text-[11px] cc-usageRow cc-site-${this.site.id || 'unknown'} cc-hidden flex flex-row items-center gap-3 w-full`;
 
 			this.sessionUsageSpan = document.createElement('span');
 			this.sessionUsageSpan.className = 'cc-usageText';
@@ -277,7 +367,8 @@
 
 		_setupTooltips() {
 			this.lengthTooltip = makeTooltip(
-				"Approximate tokens (excludes system prompt).\nUses a generic tokenizer, may differ from Claude's count.\nBecomes invalid after context compaction.\nBar scale: 200k tokens (Claude's maximum context length, will compact before then)."
+				this.site.tokenTooltip ||
+					'Approximate tokens.\nUses a generic tokenizer, so native counts may differ.'
 			);
 			setupTooltip(
 				this.lengthGroup,
@@ -287,19 +378,19 @@
 
 			setupTooltip(
 				this.cachedDisplay,
-				makeTooltip("Messages sent while cached are significantly cheaper."),
+				makeTooltip(this.site.cacheTooltip || this.site.contextTooltip || 'Context status.'),
 				{ topOffset: 8 }
 			);
 
 			setupTooltip(
 				this.sessionGroup,
-				makeTooltip("5-hour session window.\nThe bar shows your usage.\nThe line marks where you are in the window."),
+				makeTooltip(this.site.sessionTooltip || 'Usage window.\nShown only when exact native usage data is available.'),
 				{ topOffset: 8 }
 			);
 
 			setupTooltip(
 				this.weeklyGroup,
-				makeTooltip("7-day usage window.\nThe bar shows your usage.\nThe line marks where you are in the window."),
+				makeTooltip(this.site.weeklyTooltip || 'Weekly usage window.\nShown only when exact native usage data is available.'),
 				{ topOffset: 8 }
 			);
 		}
@@ -307,13 +398,22 @@
 		attach() {
 			this.attachHeader();
 			this.attachUsageLine();
+			this._updateFloatingPosition();
 			this.refreshProgressChrome();
 		}
 
 		attachHeader() {
-			const chatMenu = document.querySelector(CC.DOM.CHAT_MENU_TRIGGER);
-			if (!chatMenu) return;
-			const anchor = chatMenu.closest(CC.DOM.CHAT_PROJECT_WRAPPER) || chatMenu.parentElement;
+			if (this.site.id === 'chatgpt') {
+				const container = this._ensureFloatingContainer();
+				if (container && this.headerContainer.parentElement !== container) {
+					container.prepend(this.headerContainer);
+				}
+				this._renderHeader();
+				this.refreshProgressChrome();
+				return;
+			}
+
+			const anchor = this.site.findHeaderAnchor?.() || this.site.findUsageAnchor?.();
 			if (!anchor) return;
 			if (anchor.nextElementSibling !== this.headerContainer) {
 				anchor.after(this.headerContainer);
@@ -324,30 +424,16 @@
 
 		attachUsageLine() {
 			if (!this.usageLine) return;
-			const modelSelector = document.querySelector(CC.DOM.MODEL_SELECTOR_DROPDOWN);
-			if (!modelSelector) return;
-			const gridContainer = modelSelector.closest('[data-testid="chat-input-grid-container"]');
-			const gridArea = modelSelector.closest('[data-testid="chat-input-grid-area"]');
-			const findToolbarRow = (el, stopAt) => {
-				let cur = el;
-				while (cur && cur !== document.body) {
-					if (stopAt && cur === stopAt) break;
-					if (cur !== el && cur.nodeType === 1) {
-						const style = window.getComputedStyle(cur);
-						if (style.display === 'flex' && style.flexDirection === 'row') {
-							const buttons = cur.querySelectorAll('button').length;
-							if (buttons > 1) return cur;
-						}
-					}
-					cur = cur.parentElement;
+			if (this.site.id === 'chatgpt') {
+				const container = this._ensureFloatingContainer();
+				if (container && this.usageLine.parentElement !== container) {
+					container.appendChild(this.usageLine);
 				}
-				return null;
-			};
+				this.refreshProgressChrome();
+				return;
+			}
 
-			const toolbarRow =
-				(gridContainer ? findToolbarRow(modelSelector, gridArea || gridContainer) : null) ||
-				findToolbarRow(modelSelector) ||
-				modelSelector.parentElement?.parentElement?.parentElement;
+			const toolbarRow = this.site.findUsageAnchor?.();
 			if (!toolbarRow) return;
 			if (toolbarRow.nextElementSibling !== this.usageLine) {
 				toolbarRow.after(this.usageLine);
@@ -356,6 +442,7 @@
 		}
 
 		setPendingCache(pending) {
+			if (!this.site.hasCacheTimer) return;
 			this.pendingCache = pending;
 			if (this.cacheTimeSpan) {
 				if (pending) {
@@ -367,7 +454,7 @@
 			}
 		}
 
-		setConversationMetrics({ totalTokens, cachedUntil } = {}) {
+		setConversationMetrics({ totalTokens, cachedUntil, contextLimitTokens, contextLabel, source } = {}) {
 			this.pendingCache = false;
 
 			if (typeof totalTokens !== 'number') {
@@ -378,20 +465,23 @@
 				return;
 			}
 
-			const pct = Math.max(0, Math.min(100, (totalTokens / CC.CONST.CONTEXT_LIMIT_TOKENS) * 100));
-			this.lengthDisplay.textContent = `~${totalTokens.toLocaleString()} tokens`;
+			const limit = contextLimitTokens || this.site.contextLimitTokens || null;
+			const showContextBar = typeof limit === 'number' && Number.isFinite(limit) && limit > 0;
+			const pct = showContextBar ? Math.max(0, Math.min(100, (totalTokens / limit) * 100)) : null;
+			const sourceText = source === 'visible' ? ' visible tokens' : ' tokens';
+			this.lengthDisplay.textContent = `~${totalTokens.toLocaleString()}${sourceText}`;
 
 			// Mini bar (hide when full - context is definitely compacted by then)
-			const isFull = pct >= 99.5;
+			const isFull = showContextBar && pct >= 99.5;
 			if (isFull) {
 				this.lengthDisplay.style.opacity = '0.5';
 				this.lengthBar = null;
 				this.lengthGroup.replaceChildren(this.lengthDisplay);
 				if (this.lengthTooltip) {
 					this.lengthTooltip.textContent =
-						"Approximate tokens (excludes system prompt).\nUses a generic tokenizer, may differ from Claude's count.\nThis count is invalid after compaction.";
+						this.site.contextTooltip || 'Approximate tokens.\nThis count may be invalid after compaction.';
 				}
-			} else {
+			} else if (showContextBar) {
 				this.lengthDisplay.style.opacity = '';
 				const bar = document.createElement('div');
 				bar.className = 'cc-bar cc-bar--mini';
@@ -407,11 +497,15 @@
 				barContainer.appendChild(bar);
 
 				this.lengthGroup.replaceChildren(this.lengthDisplay, document.createTextNode('\u00A0\u00A0'), barContainer);
+			} else {
+				this.lengthDisplay.style.opacity = '';
+				this.lengthBar = null;
+				this.lengthGroup.replaceChildren(this.lengthDisplay);
 			}
 
 			// Cache timer
 			const now = Date.now();
-			if (typeof cachedUntil === 'number' && cachedUntil > now) {
+			if (this.site.hasCacheTimer && typeof cachedUntil === 'number' && cachedUntil > now) {
 				this.lastCachedUntilMs = cachedUntil;
 				const secondsLeft = Math.max(0, Math.ceil((cachedUntil - now) / 1000));
 				const { boldColor } = this.getProgressChrome();
@@ -421,6 +515,11 @@
 				});
 				this.cacheTimeSpan.style.color = boldColor;
 				this.cachedDisplay.replaceChildren(document.createTextNode('cached for\u00A0'), this.cacheTimeSpan);
+			} else if (!this.site.hasCacheTimer && showContextBar) {
+				this.lastCachedUntilMs = null;
+				this.cacheTimeSpan = null;
+				const label = contextLabel || `${formatCompactTokens(limit)} context`;
+				this.cachedDisplay.textContent = `of ${label}`;
 			} else {
 				this.lastCachedUntilMs = null;
 				this.cacheTimeSpan = null;
@@ -436,6 +535,7 @@
 			const hasTokens = !!this.lengthDisplay.textContent;
 			const hasCache = !!this.cachedDisplay.textContent;
 
+			this.headerContainer.classList.toggle('cc-hidden', !hasTokens);
 			if (!hasTokens) return;
 
 			if (hasCache) {
@@ -454,6 +554,7 @@
 
 		setUsage(usage) {
 			this.refreshProgressChrome();
+			this.usageLine?.classList.remove('cc-usageRow--status');
 			const session = usage?.five_hour || null;
 			const weekly = usage?.seven_day || null;
 			const hasAnyUsage =
@@ -461,12 +562,13 @@
 			this.usageLine?.classList.toggle('cc-hidden', !hasAnyUsage);
 
 			if (session && typeof session.utilization === 'number') {
+				this.sessionBar.classList.remove('cc-hidden');
 				const rawPct = session.utilization;
 				const pct = Math.round(rawPct * 10) / 10;
 				this.sessionResetMs = session.resets_at ? Date.parse(session.resets_at) : null;
-				this.sessionWindowStartMs = this.sessionResetMs ? this.sessionResetMs - 5 * 60 * 60 * 1000 : null;
+				this.sessionWindowStartMs = getWindowStartMs(session, this.sessionResetMs, 5);
 				const resetText = this.sessionResetMs ? ` · resets in ${formatResetCountdown(this.sessionResetMs)}` : '';
-				this.sessionUsageSpan.textContent = `Session: ${pct}%${resetText}`;
+				this.sessionUsageSpan.textContent = `${getUsageLabel(session, 'Session')}: ${pct}%${resetText}`;
 
 				const width = Math.max(0, Math.min(100, rawPct));
 				this.sessionBarFill.style.width = `${width}%`;
@@ -491,9 +593,9 @@
 				const rawPct = weekly.utilization;
 				const pct = Math.round(rawPct * 10) / 10;
 				this.weeklyResetMs = weekly.resets_at ? Date.parse(weekly.resets_at) : null;
-				this.weeklyWindowStartMs = this.weeklyResetMs ? this.weeklyResetMs - 7 * 24 * 60 * 60 * 1000 : null;
+				this.weeklyWindowStartMs = getWindowStartMs(weekly, this.weeklyResetMs, 24 * 7);
 				const resetText = this.weeklyResetMs ? ` · resets in ${formatResetCountdown(this.weeklyResetMs)}` : '';
-				this.weeklyUsageSpan.textContent = `Weekly: ${pct}%${resetText}`;
+				this.weeklyUsageSpan.textContent = `${getUsageLabel(weekly, 'Weekly')}: ${pct}%${resetText}`;
 
 				const width = Math.max(0, Math.min(100, rawPct));
 				this.weeklyBarFill.style.width = `${width}%`;
@@ -508,6 +610,25 @@
 			}
 
 			this._updateMarkers();
+		}
+
+		setUsageStatus(text) {
+			this.refreshProgressChrome();
+			const statusText = typeof text === 'string' && text.trim() ? text.trim() : '';
+			this.usageLine?.classList.toggle('cc-hidden', !statusText);
+			this.usageLine?.classList.add('cc-usageRow--status');
+			this.sessionGroup?.classList.toggle('cc-usageGroup--single', true);
+			this.weeklyGroup?.classList.add('cc-hidden');
+			this.weeklyUsageSpan?.classList.add('cc-hidden');
+			this.weeklyBar?.classList.add('cc-hidden');
+			this.sessionBar?.classList.add('cc-hidden');
+			this.sessionMarker?.classList.add('cc-hidden');
+			this.weeklyMarker?.classList.add('cc-hidden');
+			this.sessionResetMs = null;
+			this.weeklyResetMs = null;
+			this.sessionWindowStartMs = null;
+			this.weeklyWindowStartMs = null;
+			if (this.sessionUsageSpan) this.sessionUsageSpan.textContent = statusText;
 		}
 
 		_updateMarkers() {

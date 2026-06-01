@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Claude Counter",
-  "version": "0.4.3",
+  "name": "AI Counter",
+  "version": "0.5.0",
   "browser_specific_settings": {
     "gecko": {
       "id": "{159468f6-fd52-48e0-a790-5fc68b7a1cdd}",
@@ -9,7 +9,7 @@
       "data_collection_permissions": { "required": ["none"] }
     }
   },
-  "description": "Shows ~token count, cache timer, and native session/weekly usage bars on claude.ai.",
+  "description": "Shows approximate token counts and native usage signals on Claude and ChatGPT.",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -19,7 +19,7 @@
     "256": "icons/icon256.png"
   },
   "action": {
-    "default_title": "Claude Counter",
+    "default_title": "AI Counter",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
@@ -30,10 +30,11 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://claude.ai/*"],
+      "matches": ["https://claude.ai/*", "https://chatgpt.com/*", "https://chat.openai.com/*"],
       "css": ["src/styles.css"],
       "js": [
         "src/content/constants.js",
+        "src/content/sites.js",
         "src/content/bridge-client.js",
         "src/vendor/o200k_base.js",
         "src/content/tokens.js",
@@ -45,7 +46,7 @@
   "web_accessible_resources": [
     {
       "resources": ["src/injected/bridge.js"],
-      "matches": ["https://claude.ai/*"]
+      "matches": ["https://claude.ai/*", "https://chatgpt.com/*", "https://chat.openai.com/*"]
     }
   ]
 }

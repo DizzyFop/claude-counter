@@ -81,6 +81,14 @@
 			return this.request('conversation', { orgId, conversationId }, { timeoutMs: 20000 });
 		}
 
+		async requestChatGptConversation(conversationId) {
+			return this.request('chatgpt_conversation', { conversationId }, { timeoutMs: 20000 });
+		}
+
+		async requestChatGptUsage() {
+			return this.request('chatgpt_usage', {}, { timeoutMs: 20000 });
+		}
+
 		async requestHash(text) {
 			return this.request('hash', { text }, { timeoutMs: 5000 });
 		}

@@ -67,6 +67,37 @@
 		return trunk;
 	}
 
+	function buildChatGptTrunk(conversation) {
+		const mapping = conversation?.mapping && typeof conversation.mapping === 'object' ? conversation.mapping : null;
+		if (!mapping) return [];
+
+		const rootId =
+			conversation.current_node ||
+			conversation.currentNode ||
+			conversation.current_node_id ||
+			conversation.moderation_results?.current_node ||
+			null;
+		let currentId = rootId;
+
+		if (!currentId) {
+			const leaves = Object.values(mapping).filter((node) => Array.isArray(node?.children) && node.children.length === 0);
+			currentId = leaves[leaves.length - 1]?.id || null;
+		}
+
+		const trunk = [];
+		const seen = new Set();
+		while (currentId && !seen.has(currentId)) {
+			seen.add(currentId);
+			const node = mapping[currentId];
+			if (!node) break;
+			if (node.message) trunk.push(node.message);
+			currentId = node.parent || node.parent_id || null;
+		}
+
+		trunk.reverse();
+		return trunk;
+	}
+
 	function isCountableContentItem(item) {
 		if (!item || typeof item !== 'object') return false;
 		if (typeof item.type !== 'string') return false;
@@ -132,6 +163,84 @@
 		return parts.join('\n');
 	}
 
+	function stringifyChatGptPart(part) {
+		if (!part) return '';
+		if (typeof part === 'string') return part;
+		if (typeof part !== 'object') return '';
+		if (typeof part.text === 'string') return part.text;
+		if (typeof part.content === 'string') return part.content;
+		if (typeof part.name === 'string' && typeof part.url === 'string') {
+			return stableStringify({ name: part.name, url: part.url });
+		}
+		if (part.type === 'image' || part.content_type === 'image') return '';
+		return '';
+	}
+
+	function stringifyChatGptMessageCountables(message) {
+		const role = message?.author?.role || message?.role || '';
+		if (role === 'system' || role === 'developer') return '';
+		if (message?.metadata?.is_visually_hidden_from_conversation) return '';
+
+		const content = message?.content;
+		const parts = [];
+		if (Array.isArray(content?.parts)) {
+			for (const part of content.parts) {
+				const s = stringifyChatGptPart(part);
+				if (s) parts.push(s);
+			}
+		} else if (typeof content?.text === 'string') {
+			parts.push(content.text);
+		} else if (typeof content === 'string') {
+			parts.push(content);
+		}
+
+		if (content?.content_type === 'code' && typeof content?.text === 'string') {
+			parts.push(content.text);
+		}
+
+		return parts.join('\n');
+	}
+
+	function normalizeContextLimitCandidate(value) {
+		if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+		if (value < 4000 || value > 2000000) return null;
+		return Math.round(value);
+	}
+
+	function findExplicitContextLimit(value, path = '', depth = 0) {
+		if (!value || typeof value !== 'object' || depth > 8) return null;
+
+		for (const [key, child] of Object.entries(value)) {
+			const keyPath = path ? `${path}.${key}` : key;
+			const normalizedKey = key.toLowerCase();
+			const normalizedPath = keyPath.toLowerCase();
+			const looksContextual =
+				(normalizedPath.includes('context') || normalizedPath.includes('window')) &&
+				(normalizedKey.includes('token') || normalizedKey.includes('limit') || normalizedKey.includes('size'));
+			if (looksContextual) {
+				const candidate = normalizeContextLimitCandidate(child);
+				if (candidate) return candidate;
+			}
+		}
+
+		for (const [key, child] of Object.entries(value)) {
+			if (!child || typeof child !== 'object') continue;
+			const found = findExplicitContextLimit(child, path ? `${path}.${key}` : key, depth + 1);
+			if (found) return found;
+		}
+
+		return null;
+	}
+
+	function getChatGptContextLimit(conversation) {
+		const explicit = findExplicitContextLimit(conversation);
+		if (!explicit) return null;
+		return {
+			contextLimitTokens: explicit,
+			contextLabel: `${Math.round(explicit / 1000).toLocaleString()}k context`
+		};
+	}
+
 	async function hashString(str) {
 		if (!CC.bridge?.requestHash) return null;
 		try {
@@ -176,7 +285,7 @@
 
 	const tokenCache = new TokenCache();
 
-	async function computeConversationMetrics(conversation) {
+	async function computeClaudeConversationMetrics(conversation) {
 		const trunk = buildTrunk(conversation);
 		const trunkIds = trunk.map((m) => m.uuid).filter(Boolean);
 		tokenCache.pruneToMessageIds(trunkIds);
@@ -206,5 +315,56 @@
 		};
 	}
 
-	CC.tokens = { computeConversationMetrics };
+	async function computeChatGptConversationMetrics(conversation) {
+		const trunk = buildChatGptTrunk(conversation);
+		const trunkIds = trunk.map((m, index) => m.id || m.message_id || `chatgpt:${index}`).filter(Boolean);
+		tokenCache.pruneToMessageIds(trunkIds);
+
+		let totalTokens = 0;
+		for (let index = 0; index < trunk.length; index += 1) {
+			const msg = trunk[index];
+			const msgText = stringifyChatGptMessageCountables(msg);
+			if (!msgText) continue;
+			const msgId = msg.id || msg.message_id || `chatgpt:${index}`;
+			totalTokens += await tokenCache.getMessageTokens(msgId, msgText);
+		}
+
+		return {
+			trunkMessageCount: trunk.length,
+			totalTokens,
+			source: 'structured',
+			...getChatGptContextLimit(conversation)
+		};
+	}
+
+	async function computeVisibleChatGptMetrics() {
+		let nodes = Array.from(document.querySelectorAll('[data-message-author-role]'));
+		if (!nodes.length) nodes = Array.from(document.querySelectorAll('[data-testid^="conversation-turn-"]'));
+		if (!nodes.length) nodes = Array.from(document.querySelectorAll('main article'));
+		const visibleNodes = nodes.filter((node) => {
+			const text = node.innerText?.trim();
+			if (!text) return false;
+			const role = node.getAttribute('data-message-author-role');
+			return role !== 'system' && role !== 'developer';
+		});
+
+		let totalTokens = 0;
+		for (let index = 0; index < visibleNodes.length; index += 1) {
+			const text = visibleNodes[index].innerText.trim();
+			totalTokens += await tokenCache.getMessageTokens(`chatgpt-visible:${index}`, text);
+		}
+
+		return {
+			trunkMessageCount: visibleNodes.length,
+			totalTokens,
+			source: 'visible'
+		};
+	}
+
+	async function computeConversationMetrics(conversation, { siteId } = {}) {
+		if (siteId === 'chatgpt') return computeChatGptConversationMetrics(conversation);
+		return computeClaudeConversationMetrics(conversation);
+	}
+
+	CC.tokens = { computeConversationMetrics, computeVisibleChatGptMetrics };
 })();
