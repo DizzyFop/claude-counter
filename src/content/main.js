@@ -5,6 +5,8 @@
 	if (CC.__started) return;
 	CC.__started = true;
 
+	const USAGE_POLL_MS = 30 * 1000;
+
 	function getConversationId() {
 		const match = window.location.pathname.match(/\/chat\/([^/?]+)/);
 		return match ? match[1] : null;
@@ -314,4 +316,12 @@
 
 	// Keep countdowns + markers updated.
 	setInterval(tick, 1000);
+
+	// Periodic usage refresh so bars stay current when this tab is idle.
+	// SSE only fires for this tab's own messages, so usage from mobile / API / other tabs
+	// otherwise wouldn't surface until the hourly safety net in tick().
+	setInterval(() => {
+		if (document.hidden) return;
+		refreshUsage();
+	}, USAGE_POLL_MS);
 })();
