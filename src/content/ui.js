@@ -207,7 +207,7 @@
 
 				if (headerMissing && !headerReattachPending) {
 					headerReattachPending = true;
-					CC.waitForElement(CC.DOM.CHAT_MENU_TRIGGER, 60000).then((el) => {
+					CC.waitForElement(CC.DOM.CHAT_TITLE_SPLIT, 60000).then((el) => {
 						headerReattachPending = false;
 						if (el) this.attachHeader();
 					});
@@ -277,7 +277,7 @@
 
 		_setupTooltips() {
 			this.lengthTooltip = makeTooltip(
-				"Approximate tokens (excludes system prompt).\nUses a generic tokenizer, may differ from Claude's count.\nBecomes invalid after context compaction.\nBar scale: 200k tokens (Claude's maximum context length, will compact before then)."
+				"Approximate — not Claude's exact count.\nText uses a generic tokenizer; images & PDFs are estimated by size.\nExcludes the hidden system prompt & tools, so real usage is higher.\nInvalid after context compaction.\nBar scale: 200k tokens (Claude compacts before then)."
 			);
 			setupTooltip(
 				this.lengthGroup,
@@ -287,7 +287,7 @@
 
 			setupTooltip(
 				this.cachedDisplay,
-				makeTooltip("Messages sent while cached are significantly cheaper."),
+				makeTooltip("Continuing a chat within ~5 min reuses Claude's cache (the timer resets each message).\nCached context is faster and may use less of your usage limit."),
 				{ topOffset: 8 }
 			);
 
@@ -311,12 +311,10 @@
 		}
 
 		attachHeader() {
-			const chatMenu = document.querySelector(CC.DOM.CHAT_MENU_TRIGGER);
-			if (!chatMenu) return;
-			const anchor = chatMenu.closest(CC.DOM.CHAT_PROJECT_WRAPPER) || chatMenu.parentElement;
-			if (!anchor) return;
-			if (anchor.nextElementSibling !== this.headerContainer) {
-				anchor.after(this.headerContainer);
+			const titleSplit = document.querySelector(CC.DOM.CHAT_TITLE_SPLIT);
+			if (!titleSplit) return;
+			if (titleSplit.nextElementSibling !== this.headerContainer) {
+				titleSplit.after(this.headerContainer);
 			}
 			this._renderHeader();
 			this.refreshProgressChrome();
@@ -389,7 +387,7 @@
 				this.lengthGroup.replaceChildren(this.lengthDisplay);
 				if (this.lengthTooltip) {
 					this.lengthTooltip.textContent =
-						"Approximate tokens (excludes system prompt).\nUses a generic tokenizer, may differ from Claude's count.\nThis count is invalid after compaction.";
+						"Approximate — not Claude's exact count.\nExcludes the hidden system prompt & tools, so real usage is higher.\nThis count is invalid after compaction.";
 				}
 			} else {
 				this.lengthDisplay.style.opacity = '';

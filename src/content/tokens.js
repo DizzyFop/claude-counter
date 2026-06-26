@@ -176,6 +176,41 @@
 
 	const tokenCache = new TokenCache();
 
+	// --- Non-text uploads (images, PDFs) ---
+	// claude.ai attaches uploads to a message via files_v2 (or legacy files), not in
+	// the text content, so the tokenizer never sees them. They're estimated by size:
+	//   - images: Anthropic bills ~ (width * height) / 750 tokens, capped once the
+	//             image is downscaled (~1.15 MP -> ~1600 tokens).
+	//   - PDFs:   each page is rendered + text-extracted; estimated per page.
+	// These are approximations and will differ from Claude's exact count.
+	const IMG_TOKENS_DIVISOR = 750;
+	const IMG_TOKENS_CAP = 1600;
+	const DOC_TOKENS_PER_PAGE = 1600;
+
+	function estimateImageTokens(file) {
+		const w = file?.preview_asset?.image_width;
+		const h = file?.preview_asset?.image_height;
+		if (typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0) {
+			return Math.min(IMG_TOKENS_CAP, Math.ceil((w * h) / IMG_TOKENS_DIVISOR));
+		}
+		return IMG_TOKENS_CAP; // dimensions unknown: assume a full-size image
+	}
+
+	function estimateFileTokens(message) {
+		const v2 = Array.isArray(message?.files_v2) ? message.files_v2 : null;
+		const files = v2 && v2.length ? v2 : (Array.isArray(message?.files) ? message.files : []);
+		let tokens = 0;
+		for (const file of files) {
+			const pageCount = file?.document_asset?.page_count;
+			if (typeof pageCount === 'number' && pageCount > 0) {
+				tokens += pageCount * DOC_TOKENS_PER_PAGE;
+			} else if (file?.preview_asset) {
+				tokens += estimateImageTokens(file);
+			}
+		}
+		return tokens;
+	}
+
 	async function computeConversationMetrics(conversation) {
 		const trunk = buildTrunk(conversation);
 		const trunkIds = trunk.map((m) => m.uuid).filter(Boolean);
@@ -194,7 +229,7 @@
 
 			const msgText = stringifyMessageCountables(msg);
 			const msgTokens = msg?.uuid ? await tokenCache.getMessageTokens(msg.uuid, msgText) : countTokens(msgText);
-			totalTokens += msgTokens;
+			totalTokens += msgTokens + estimateFileTokens(msg);
 		}
 		const cachedUntil = lastAssistantMs ? lastAssistantMs + CC.CONST.CACHE_WINDOW_MS : null;
 

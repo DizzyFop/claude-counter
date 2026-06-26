@@ -5,7 +5,7 @@
 	if (CC.__started) return;
 	CC.__started = true;
 
-	const USAGE_POLL_MS = 30 * 1000;
+	const USAGE_POLL_MS = 60 * 1000;
 
 	function getConversationId() {
 		const match = window.location.pathname.match(/\/chat\/([^/?]+)/);
@@ -224,11 +224,11 @@
 		currentConversationId = getConversationId();
 
 		// Attach usage line and header independently - they have different anchor elements
-		// and CHAT_MENU_TRIGGER doesn't exist on home/new pages
+		// and CHAT_TITLE_SPLIT doesn't exist on home/new pages
 		waitForElement(CC.DOM.MODEL_SELECTOR_DROPDOWN, 60000).then((el) => {
 			if (el) ui.attachUsageLine();
 		});
-		waitForElement(CC.DOM.CHAT_MENU_TRIGGER, 60000).then((el) => {
+		waitForElement(CC.DOM.CHAT_TITLE_SPLIT, 60000).then((el) => {
 			if (el) ui.attachHeader();
 		});
 
