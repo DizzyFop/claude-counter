@@ -33,7 +33,27 @@
 		return `${days}d ${remHours}h`;
 	}
 
-	function setupTooltip(element, tooltip, { topOffset = 10 } = {}) {
+	// Round to the nearest minute so sub-minute rounding differences between the
+	// two usage sources (SSE message_limit vs. /usage endpoint) don't flip the display.
+	function roundToMinute(timestampMs) {
+		return new Date(Math.round(timestampMs / 60000) * 60000);
+	}
+
+	function formatClockTime(timestampMs) {
+		return roundToMinute(timestampMs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+	}
+
+	function formatDayTime(timestampMs) {
+		return roundToMinute(timestampMs).toLocaleString([], {
+			weekday: 'long',
+			month: 'short',
+			day: 'numeric',
+			hour: 'numeric',
+			minute: '2-digit',
+		});
+	}
+
+	function setupTooltip(element, tooltip, { topOffset = 10, getText = null, anchor = null } = {}) {
 		if (!element || !tooltip) return;
 		if (element.hasAttribute('data-tooltip-setup')) return;
 		element.setAttribute('data-tooltip-setup', 'true');
@@ -43,7 +63,11 @@
 		let hideTimer;
 
 		const show = () => {
-			const rect = element.getBoundingClientRect();
+			if (getText) {
+				const text = getText();
+				if (text) tooltip.textContent = text;
+			}
+			const rect = (anchor || element).getBoundingClientRect();
 			tooltip.style.opacity = '1';
 			const tipRect = tooltip.getBoundingClientRect();
 
@@ -293,14 +317,28 @@
 
 			setupTooltip(
 				this.sessionGroup,
-				makeTooltip("5-hour session window.\nThe bar shows your usage.\nThe line marks where you are in the window."),
-				{ topOffset: 8 }
+				makeTooltip(''),
+				{
+					topOffset: 8,
+					anchor: this.sessionBar,
+					getText: () =>
+						this.sessionResetMs
+							? `Resets at ${formatClockTime(this.sessionResetMs)}`
+							: '5-hour session window',
+				}
 			);
 
 			setupTooltip(
 				this.weeklyGroup,
-				makeTooltip("7-day usage window.\nThe bar shows your usage.\nThe line marks where you are in the window."),
-				{ topOffset: 8 }
+				makeTooltip(''),
+				{
+					topOffset: 8,
+					anchor: this.weeklyBar,
+					getText: () =>
+						this.weeklyResetMs
+							? `Resets ${formatDayTime(this.weeklyResetMs)}`
+							: '7-day usage window',
+				}
 			);
 		}
 
