@@ -97,7 +97,31 @@
 		const sevenDay = normalizeWindow(raw.seven_day, 24 * 7);
 
 		if (!fiveHour && !sevenDay) return null;
-		return { five_hour: fiveHour, seven_day: sevenDay };
+		return { five_hour: fiveHour, seven_day: sevenDay, fable: parseFableFromLimits(raw) };
+	}
+
+	// Fable (and other model-scoped weekly caps) live in the `limits` array, not the
+	// top-level seven_day_* fields (which are null). Pull the weekly Fable entry if present.
+	function parseFableFromLimits(raw) {
+		if (!Array.isArray(raw?.limits)) return null;
+		const entry = raw.limits.find(
+			(l) =>
+				l &&
+				l.group === 'weekly' &&
+				l.scope &&
+				l.scope.model &&
+				typeof l.percent === 'number' &&
+				Number.isFinite(l.percent)
+		);
+		if (!entry) return null;
+		return {
+			utilization: Math.max(0, Math.min(100, entry.percent)),
+			resets_at: typeof entry.resets_at === 'string' ? entry.resets_at : null,
+			severity: typeof entry.severity === 'string' ? entry.severity : null,
+			display_name:
+				typeof entry.scope.model.display_name === 'string' ? entry.scope.model.display_name : 'Fable',
+			window_hours: 24 * 7
+		};
 	}
 
 	function parseUsageFromMessageLimit(raw) {
@@ -143,6 +167,11 @@
 	function applyUsageUpdate(normalized, source) {
 		if (!normalized) return;
 		const now = Date.now();
+		// SSE message_limit payloads don't include the Fable cap; keep the last known
+		// value (refreshed by the periodic /usage fetch) so the Fable bar doesn't flicker.
+		if (source === 'sse' && !normalized.fable && usageState?.fable) {
+			normalized = { ...normalized, fable: usageState.fable };
+		}
 		usageState = normalized;
 		lastUsageUpdateMs = now;
 		if (source === 'sse') lastUsageSseMs = now;

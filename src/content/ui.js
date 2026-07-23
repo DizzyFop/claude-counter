@@ -162,12 +162,14 @@
 				strokeColor: isDark ? CC.COLORS.PROGRESS_OUTLINE_DARK : CC.COLORS.PROGRESS_OUTLINE_LIGHT,
 				fillColor: isDark ? CC.COLORS.PROGRESS_FILL_DARK : CC.COLORS.PROGRESS_FILL_LIGHT,
 				markerColor: isDark ? CC.COLORS.PROGRESS_MARKER_DARK : CC.COLORS.PROGRESS_MARKER_LIGHT,
+				fableColor: isDark ? CC.COLORS.FABLE_FILL_DARK : CC.COLORS.FABLE_FILL_LIGHT,
+				fableWarnColor: isDark ? CC.COLORS.FABLE_WARN_DARK : CC.COLORS.FABLE_WARN_LIGHT,
 				boldColor: isDark ? CC.COLORS.BOLD_DARK : CC.COLORS.BOLD_LIGHT
 			};
 		}
 
 		refreshProgressChrome() {
-			const { strokeColor, fillColor, markerColor } = this.getProgressChrome();
+			const { strokeColor, fillColor, markerColor, fableColor, fableWarnColor } = this.getProgressChrome();
 
 			const applyBarChrome = (bar, { fillWarn } = {}) => {
 				if (!bar) return;
@@ -180,6 +182,13 @@
 			applyBarChrome(this.lengthBar, { fillWarn: fillColor });
 			applyBarChrome(this.sessionBar, { fillWarn: CC.COLORS.RED_WARNING });
 			applyBarChrome(this.weeklyBar, { fillWarn: CC.COLORS.RED_WARNING });
+			// Fable (bottom half of the weekly bar): teal (normal) → gold (warning) → red (critical),
+			// tracking claude.ai's severity so the color matches what the app shows.
+			if (this.weeklyBar) {
+				this.weeklyBar.style.setProperty('--cc-fill-fable', fableColor);
+				this.weeklyBar.style.setProperty('--cc-fill-fable-warn', fableWarnColor);
+				this.weeklyBar.style.setProperty('--cc-fill-fable-crit', CC.COLORS.RED_WARNING);
+			}
 		}
 
 		initialize() {
@@ -264,11 +273,14 @@
 			this.weeklyBar = document.createElement('div');
 			this.weeklyBar.className = 'cc-bar cc-bar--usage';
 			this.weeklyBarFill = document.createElement('div');
-			this.weeklyBarFill.className = 'cc-bar__fill';
+			this.weeklyBarFill.className = 'cc-bar__fill cc-bar__fill--top';
+			this.weeklyFableFill = document.createElement('div');
+			this.weeklyFableFill.className = 'cc-bar__fill cc-bar__fill--bottom';
 			this.weeklyMarker = document.createElement('div');
 			this.weeklyMarker.className = 'cc-bar__marker cc-hidden';
 			this.weeklyMarker.style.left = '0%';
 			this.weeklyBar.appendChild(this.weeklyBarFill);
+			this.weeklyBar.appendChild(this.weeklyFableFill);
 			this.weeklyBar.appendChild(this.weeklyMarker);
 
 			this.sessionGroup = document.createElement('div');
@@ -334,10 +346,15 @@
 				{
 					topOffset: 8,
 					anchor: this.weeklyBar,
-					getText: () =>
-						this.weeklyResetMs
+					getText: () => {
+						const base = this.weeklyResetMs
 							? `Resets ${formatDayTime(this.weeklyResetMs)}`
-							: '7-day usage window',
+							: '7-day usage window';
+						if (this.fablePct != null) {
+							return `All models: ${this.weeklyPct}% · ${this.fableDisplayName}: ${this.fablePct}%\n${base}`;
+						}
+						return base;
+					},
 				}
 			);
 		}
@@ -526,6 +543,7 @@
 
 				const rawPct = weekly.utilization;
 				const pct = Math.round(rawPct * 10) / 10;
+				this.weeklyPct = pct;
 				this.weeklyResetMs = weekly.resets_at ? Date.parse(weekly.resets_at) : null;
 				this.weeklyWindowStartMs = this.weeklyResetMs ? this.weeklyResetMs - 7 * 24 * 60 * 60 * 1000 : null;
 				const resetText = this.weeklyResetMs ? ` · resets in ${formatResetCountdown(this.weeklyResetMs)}` : '';
@@ -538,9 +556,37 @@
 			} else {
 				this.weeklyUsageSpan.classList.add('cc-hidden');
 				this.weeklyBar.classList.add('cc-hidden');
+				this.weeklyPct = null;
 				this.weeklyResetMs = null;
 				this.weeklyWindowStartMs = null;
 				this.weeklyBarFill.classList.remove('cc-warn', 'cc-full');
+			}
+
+			// Fable cap: bottom half of the weekly bar (only when a Fable limit is present).
+			const fable = usage?.fable || null;
+			const hasFable = hasWeekly && fable && typeof fable.utilization === 'number';
+			this.weeklyBar.classList.toggle('cc-bar--split', !!hasFable);
+			if (hasFable) {
+				this.fablePct = Math.round(fable.utilization * 10) / 10;
+				this.fableDisplayName = fable.display_name || 'Fable';
+				const fableWidth = Math.max(0, Math.min(100, fable.utilization));
+				this.weeklyFableFill.style.width = `${fableWidth}%`;
+
+				// Color by claude.ai's severity when present; fall back to % thresholds.
+				const sev = typeof fable.severity === 'string' ? fable.severity : null;
+				let state;
+				if (sev) {
+					state = sev === 'normal' ? 'normal' : sev === 'warning' ? 'warn' : 'crit';
+				} else {
+					state = fableWidth >= 90 ? 'crit' : fableWidth >= 75 ? 'warn' : 'normal';
+				}
+				this.weeklyFableFill.classList.toggle('cc-warn', state === 'warn');
+				this.weeklyFableFill.classList.toggle('cc-crit', state === 'crit');
+				this.weeklyFableFill.classList.toggle('cc-full', fableWidth >= 99.5);
+			} else {
+				this.fablePct = null;
+				this.weeklyFableFill.style.width = '0%';
+				this.weeklyFableFill.classList.remove('cc-warn', 'cc-crit', 'cc-full');
 			}
 
 			this._updateMarkers();

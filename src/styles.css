@@ -79,6 +79,32 @@
 	background: var(--cc-fill-warn);
 }
 
+/* Split weekly bar: top half = all-models weekly, bottom half = Fable cap.
+   Only active when the weekly bar carries .cc-bar--split (Fable data present). */
+.cc-bar__fill--bottom {
+	display: none;
+	background: var(--cc-fill-fable, var(--cc-fill));
+}
+
+.cc-bar__fill--bottom.cc-warn {
+	background: var(--cc-fill-fable-warn, var(--cc-fill-warn));
+}
+
+.cc-bar__fill--bottom.cc-crit {
+	background: var(--cc-fill-fable-crit, var(--cc-fill-warn));
+}
+
+.cc-bar--split .cc-bar__fill--top {
+	height: 50%;
+	border-bottom-left-radius: 0;
+}
+
+.cc-bar--split .cc-bar__fill--bottom {
+	display: block;
+	height: 50%;
+	border-top-left-radius: 0;
+}
+
 .cc-bar__marker {
 	position: absolute;
 	top: 0;

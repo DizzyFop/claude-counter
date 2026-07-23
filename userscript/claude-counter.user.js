@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Counter
 // @namespace    https://github.com/she-llac/claude-counter
-// @version      0.4.3-userscript
+// @version      0.4.6-userscript
 // @description  Shows token count, cache timer, and usage bars on claude.ai.
 // @match        https://claude.ai/*
 // @run-at       document-start
@@ -165,6 +165,10 @@
 		PROGRESS_OUTLINE_LIGHT: '#bfbfbf',
 		PROGRESS_MARKER_DARK: '#ffffff',
 		PROGRESS_MARKER_LIGHT: '#111111',
+		FABLE_FILL_DARK: '#1d9e75',
+		FABLE_FILL_LIGHT: '#2bb98a',
+		FABLE_WARN_DARK: '#e0a020',
+		FABLE_WARN_LIGHT: '#c9860a',
 		RED_WARNING: '#ce2029',
 		BOLD_LIGHT: '#141413',
 		BOLD_DARK: '#faf9f5'
@@ -551,12 +555,14 @@
 				strokeColor: isDark ? CC.COLORS.PROGRESS_OUTLINE_DARK : CC.COLORS.PROGRESS_OUTLINE_LIGHT,
 				fillColor: isDark ? CC.COLORS.PROGRESS_FILL_DARK : CC.COLORS.PROGRESS_FILL_LIGHT,
 				markerColor: isDark ? CC.COLORS.PROGRESS_MARKER_DARK : CC.COLORS.PROGRESS_MARKER_LIGHT,
+				fableColor: isDark ? CC.COLORS.FABLE_FILL_DARK : CC.COLORS.FABLE_FILL_LIGHT,
+				fableWarnColor: isDark ? CC.COLORS.FABLE_WARN_DARK : CC.COLORS.FABLE_WARN_LIGHT,
 				boldColor: isDark ? CC.COLORS.BOLD_DARK : CC.COLORS.BOLD_LIGHT
 			};
 		}
 
 		refreshProgressChrome() {
-			const { strokeColor, fillColor, markerColor } = this.getProgressChrome();
+			const { strokeColor, fillColor, markerColor, fableColor, fableWarnColor } = this.getProgressChrome();
 
 			const applyBarChrome = (bar, { fillWarn } = {}) => {
 				if (!bar) return;
@@ -569,6 +575,13 @@
 			applyBarChrome(this.lengthBar, { fillWarn: fillColor });
 			applyBarChrome(this.sessionBar, { fillWarn: CC.COLORS.RED_WARNING });
 			applyBarChrome(this.weeklyBar, { fillWarn: CC.COLORS.RED_WARNING });
+			// Fable (bottom half of the weekly bar): teal (normal) → gold (warning) → red (critical),
+			// tracking claude.ai's severity so the color matches what the app shows.
+			if (this.weeklyBar) {
+				this.weeklyBar.style.setProperty('--cc-fill-fable', fableColor);
+				this.weeklyBar.style.setProperty('--cc-fill-fable-warn', fableWarnColor);
+				this.weeklyBar.style.setProperty('--cc-fill-fable-crit', CC.COLORS.RED_WARNING);
+			}
 		}
 
 		initialize() {
@@ -653,11 +666,14 @@
 			this.weeklyBar = document.createElement('div');
 			this.weeklyBar.className = 'cc-bar cc-bar--usage';
 			this.weeklyBarFill = document.createElement('div');
-			this.weeklyBarFill.className = 'cc-bar__fill';
+			this.weeklyBarFill.className = 'cc-bar__fill cc-bar__fill--top';
+			this.weeklyFableFill = document.createElement('div');
+			this.weeklyFableFill.className = 'cc-bar__fill cc-bar__fill--bottom';
 			this.weeklyMarker = document.createElement('div');
 			this.weeklyMarker.className = 'cc-bar__marker cc-hidden';
 			this.weeklyMarker.style.left = '0%';
 			this.weeklyBar.appendChild(this.weeklyBarFill);
+			this.weeklyBar.appendChild(this.weeklyFableFill);
 			this.weeklyBar.appendChild(this.weeklyMarker);
 
 			this.sessionGroup = document.createElement('div');
@@ -723,10 +739,15 @@
 				{
 					topOffset: 8,
 					anchor: this.weeklyBar,
-					getText: () =>
-						this.weeklyResetMs
+					getText: () => {
+						const base = this.weeklyResetMs
 							? `Resets ${formatDayTime(this.weeklyResetMs)}`
-							: '7-day usage window',
+							: '7-day usage window';
+						if (this.fablePct != null) {
+							return `All models: ${this.weeklyPct}% · ${this.fableDisplayName}: ${this.fablePct}%\n${base}`;
+						}
+						return base;
+					},
 				}
 			);
 		}
@@ -917,6 +938,7 @@
 
 				const rawPct = weekly.utilization;
 				const pct = Math.round(rawPct * 10) / 10;
+				this.weeklyPct = pct;
 				this.weeklyResetMs = weekly.resets_at ? Date.parse(weekly.resets_at) : null;
 				this.weeklyWindowStartMs = this.weeklyResetMs ? this.weeklyResetMs - 7 * 24 * 60 * 60 * 1000 : null;
 				const resetText = this.weeklyResetMs ? ` · resets in ${formatResetCountdown(this.weeklyResetMs)}` : '';
@@ -929,9 +951,37 @@
 			} else {
 				this.weeklyUsageSpan.classList.add('cc-hidden');
 				this.weeklyBar.classList.add('cc-hidden');
+				this.weeklyPct = null;
 				this.weeklyResetMs = null;
 				this.weeklyWindowStartMs = null;
 				this.weeklyBarFill.classList.remove('cc-warn', 'cc-full');
+			}
+
+			// Fable cap: bottom half of the weekly bar (only when a Fable limit is present).
+			const fable = usage?.fable || null;
+			const hasFable = hasWeekly && fable && typeof fable.utilization === 'number';
+			this.weeklyBar.classList.toggle('cc-bar--split', !!hasFable);
+			if (hasFable) {
+				this.fablePct = Math.round(fable.utilization * 10) / 10;
+				this.fableDisplayName = fable.display_name || 'Fable';
+				const fableWidth = Math.max(0, Math.min(100, fable.utilization));
+				this.weeklyFableFill.style.width = `${fableWidth}%`;
+
+				// Color by claude.ai's severity when present; fall back to % thresholds.
+				const sev = typeof fable.severity === 'string' ? fable.severity : null;
+				let state;
+				if (sev) {
+					state = sev === 'normal' ? 'normal' : sev === 'warning' ? 'warn' : 'crit';
+				} else {
+					state = fableWidth >= 90 ? 'crit' : fableWidth >= 75 ? 'warn' : 'normal';
+				}
+				this.weeklyFableFill.classList.toggle('cc-warn', state === 'warn');
+				this.weeklyFableFill.classList.toggle('cc-crit', state === 'crit');
+				this.weeklyFableFill.classList.toggle('cc-full', fableWidth >= 99.5);
+			} else {
+				this.fablePct = null;
+				this.weeklyFableFill.style.width = '0%';
+				this.weeklyFableFill.classList.remove('cc-warn', 'cc-crit', 'cc-full');
 			}
 
 			this._updateMarkers();
@@ -1014,7 +1064,7 @@
 	CC.__ccUserscriptStarted = true;
 
 	const STYLE_ID = 'cc-userscript-styles';
-	const STYLES = '/* Header: tokens + cache timer */\n.cc-header {\n\tmargin-top: 2px;\n\tuser-select: none;\n}\n\n.cc-headerItem {\n\twhite-space: nowrap;\n}\n\n/* Usage row: session + weekly */\n.cc-usageRow {\n\tposition: relative;\n\tz-index: 50;\n\tcursor: pointer;\n\tuser-select: none;\n\ttransition: opacity 150ms ease;\n}\n\n.cc-usageRow--dim {\n\topacity: 0.6;\n}\n\n.cc-usageGroup {\n\tdisplay: flex;\n\talign-items: center;\n\tgap: 8px;\n\tflex: 1;\n\tmin-width: 0;\n}\n\n.cc-usageGroup--single {\n\twidth: 100%;\n}\n\n.cc-usageGroup--weekly {\n\tjustify-content: flex-end;\n}\n\n.cc-usageText {\n\twhite-space: nowrap;\n}\n\n/* Bars (mini + usage) */\n.cc-bar {\n\t--cc-radius: 3px;\n\t--cc-stroke: transparent;\n\t--cc-fill: transparent;\n\t--cc-fill-warn: var(--cc-fill);\n\t--cc-marker: transparent;\n\n\tposition: relative;\n\tbox-sizing: border-box;\n\twidth: 100%;\n\theight: 6px;\n\tborder-radius: var(--cc-radius);\n\tborder: 1px solid var(--cc-stroke);\n\toverflow: visible;\n\tuser-select: none;\n}\n\n.cc-bar__fill {\n\twidth: 0%;\n\theight: 100%;\n\tbackground: var(--cc-fill);\n\ttransition: width 300ms ease, background-color 300ms ease;\n\tborder-top-left-radius: max(0px, calc(var(--cc-radius) - 1px));\n\tborder-bottom-left-radius: max(0px, calc(var(--cc-radius) - 1px));\n\tborder-top-right-radius: 0;\n\tborder-bottom-right-radius: 0;\n}\n\n.cc-bar__fill.cc-full {\n\tborder-top-right-radius: max(0px, calc(var(--cc-radius) - 1px));\n\tborder-bottom-right-radius: max(0px, calc(var(--cc-radius) - 1px));\n}\n\n.cc-bar__fill.cc-warn {\n\tbackground: var(--cc-fill-warn);\n}\n\n.cc-bar__marker {\n\tposition: absolute;\n\ttop: 0;\n\tbottom: 0;\n\tleft: 0%;\n\twidth: 2px;\n\tbackground: var(--cc-marker);\n\tpointer-events: none;\n}\n\n.cc-bar--mini {\n\twidth: 60px;\n\theight: 7px;\n\t--cc-radius: 2px;\n}\n\n.cc-bar--usage {\n\theight: 10px;\n\tflex: 1;\n}\n\n/* Tooltips */\n.cc-tooltip {\n\tposition: fixed;\n\tz-index: 9999;\n\tpadding: 4px 8px;\n\tborder-radius: 4px;\n\tfont-size: 12px;\n\twhite-space: pre-line;\n\tuser-select: none;\n\tpointer-events: none;\n\topacity: 0;\n\ttransition: opacity 200ms ease;\n}\n\n.cc-tooltipTrigger {\n\t-webkit-touch-callout: none;\n\t-webkit-user-select: none;\n\tuser-select: none;\n\tcursor: help;\n}\n\n/* Hide optional elements completely (no layout space) */\n.cc-hidden {\n\tdisplay: none !important;\n}\n';
+	const STYLES = '/* Header: tokens + cache timer */\n.cc-header {\n\tmargin-top: 2px;\n\tuser-select: none;\n}\n\n.cc-headerItem {\n\twhite-space: nowrap;\n}\n\n/* Usage row: session + weekly */\n.cc-usageRow {\n\tposition: relative;\n\tz-index: 50;\n\tcursor: pointer;\n\tuser-select: none;\n\ttransition: opacity 150ms ease;\n}\n\n.cc-usageRow--dim {\n\topacity: 0.6;\n}\n\n.cc-usageGroup {\n\tdisplay: flex;\n\talign-items: center;\n\tgap: 8px;\n\tflex: 1;\n\tmin-width: 0;\n}\n\n.cc-usageGroup--single {\n\twidth: 100%;\n}\n\n.cc-usageGroup--weekly {\n\tjustify-content: flex-end;\n}\n\n.cc-usageText {\n\twhite-space: nowrap;\n}\n\n/* Bars (mini + usage) */\n.cc-bar {\n\t--cc-radius: 3px;\n\t--cc-stroke: transparent;\n\t--cc-fill: transparent;\n\t--cc-fill-warn: var(--cc-fill);\n\t--cc-marker: transparent;\n\n\tposition: relative;\n\tbox-sizing: border-box;\n\twidth: 100%;\n\theight: 6px;\n\tborder-radius: var(--cc-radius);\n\tborder: 1px solid var(--cc-stroke);\n\toverflow: visible;\n\tuser-select: none;\n}\n\n.cc-bar__fill {\n\twidth: 0%;\n\theight: 100%;\n\tbackground: var(--cc-fill);\n\ttransition: width 300ms ease, background-color 300ms ease;\n\tborder-top-left-radius: max(0px, calc(var(--cc-radius) - 1px));\n\tborder-bottom-left-radius: max(0px, calc(var(--cc-radius) - 1px));\n\tborder-top-right-radius: 0;\n\tborder-bottom-right-radius: 0;\n}\n\n.cc-bar__fill.cc-full {\n\tborder-top-right-radius: max(0px, calc(var(--cc-radius) - 1px));\n\tborder-bottom-right-radius: max(0px, calc(var(--cc-radius) - 1px));\n}\n\n.cc-bar__fill.cc-warn {\n\tbackground: var(--cc-fill-warn);\n}\n\n.cc-bar__fill--bottom {\n\tdisplay: none;\n\tbackground: var(--cc-fill-fable, var(--cc-fill));\n}\n\n.cc-bar__fill--bottom.cc-warn {\n\tbackground: var(--cc-fill-fable-warn, var(--cc-fill-warn));\n}\n\n.cc-bar__fill--bottom.cc-crit {\n\tbackground: var(--cc-fill-fable-crit, var(--cc-fill-warn));\n}\n\n.cc-bar--split .cc-bar__fill--top {\n\theight: 50%;\n\tborder-bottom-left-radius: 0;\n}\n\n.cc-bar--split .cc-bar__fill--bottom {\n\tdisplay: block;\n\theight: 50%;\n\tborder-top-left-radius: 0;\n}\n\n.cc-bar__marker {\n\tposition: absolute;\n\ttop: 0;\n\tbottom: 0;\n\tleft: 0%;\n\twidth: 2px;\n\tbackground: var(--cc-marker);\n\tpointer-events: none;\n}\n\n.cc-bar--mini {\n\twidth: 60px;\n\theight: 7px;\n\t--cc-radius: 2px;\n}\n\n.cc-bar--usage {\n\theight: 10px;\n\tflex: 1;\n}\n\n/* Tooltips */\n.cc-tooltip {\n\tposition: fixed;\n\tz-index: 9999;\n\tpadding: 4px 8px;\n\tborder-radius: 4px;\n\tfont-size: 12px;\n\twhite-space: pre-line;\n\tuser-select: none;\n\tpointer-events: none;\n\topacity: 0;\n\ttransition: opacity 200ms ease;\n}\n\n.cc-tooltipTrigger {\n\t-webkit-touch-callout: none;\n\t-webkit-user-select: none;\n\tuser-select: none;\n\tcursor: help;\n}\n\n/* Hide optional elements completely (no layout space) */\n.cc-hidden {\n\tdisplay: none !important;\n}\n';
 
 	function injectStyles() {
 		if (document.getElementById(STYLE_ID)) return;
@@ -1086,7 +1136,31 @@
 		const sevenDay = normalizeWindow(raw.seven_day, 24 * 7);
 
 		if (!fiveHour && !sevenDay) return null;
-		return { five_hour: fiveHour, seven_day: sevenDay };
+		return { five_hour: fiveHour, seven_day: sevenDay, fable: parseFableFromLimits(raw) };
+	}
+
+	// Fable (and other model-scoped weekly caps) live in the `limits` array, not the
+	// top-level seven_day_* fields (which are null). Pull the weekly Fable entry if present.
+	function parseFableFromLimits(raw) {
+		if (!Array.isArray(raw?.limits)) return null;
+		const entry = raw.limits.find(
+			(l) =>
+				l &&
+				l.group === 'weekly' &&
+				l.scope &&
+				l.scope.model &&
+				typeof l.percent === 'number' &&
+				Number.isFinite(l.percent)
+		);
+		if (!entry) return null;
+		return {
+			utilization: Math.max(0, Math.min(100, entry.percent)),
+			resets_at: typeof entry.resets_at === 'string' ? entry.resets_at : null,
+			severity: typeof entry.severity === 'string' ? entry.severity : null,
+			display_name:
+				typeof entry.scope.model.display_name === 'string' ? entry.scope.model.display_name : 'Fable',
+			window_hours: 24 * 7
+		};
 	}
 
 	function parseUsageFromMessageLimit(raw) {
@@ -1130,6 +1204,11 @@
 	function applyUsageUpdate(normalized, source) {
 		if (!normalized) return;
 		const now = Date.now();
+		// SSE message_limit payloads don't include the Fable cap; keep the last known
+		// value (refreshed by the periodic /usage fetch) so the Fable bar doesn't flicker.
+		if (source === 'sse' && !normalized.fable && usageState?.fable) {
+			normalized = { ...normalized, fable: usageState.fable };
+		}
 		usageState = normalized;
 		lastUsageUpdateMs = now;
 		if (source === 'sse') lastUsageSseMs = now;
