@@ -152,6 +152,7 @@
 	let lastUsageSseMs = 0;
 	let usageFetchInFlight = false;
 	let lastUsageUpdateMs = 0;
+	let lastUsageAttemptMs = 0;
 	const rolloverHandledForResetMs = { five_hour: null, seven_day: null };
 
 	const ui = new CC.ui.CounterUI({
@@ -195,6 +196,7 @@
 
 		if (usageFetchInFlight) return;
 		usageFetchInFlight = true;
+		lastUsageAttemptMs = Date.now();
 		let raw;
 		try {
 			raw = await CC.bridge.requestUsage(orgId);
@@ -269,10 +271,11 @@
 		// Best-effort orgId from cookie.
 		updateOrgIdIfNeeded(getOrgIdFromCookie());
 
+		// Usage is org-level, not conversation-level, so it doesn't need to queue behind the
+		// conversation fetch and token count. Start it first, then await both.
+		const usagePending = usageState ? null : refreshUsage();
 		await refreshConversation();
-
-		// Usage is org-level, not conversation-level. Only fetch on first load or if stale.
-		if (!usageState) await refreshUsage();
+		if (usagePending) await usagePending;
 	}
 
 	const unobserveUrl = observeUrlChanges(handleUrlChange);
@@ -338,7 +341,11 @@
 		const ONE_HOUR_MS = 60 * 60 * 1000;
 		const sseAge = now - lastUsageSseMs;
 		const anyAge = now - lastUsageUpdateMs;
-		if (!document.hidden && sseAge > ONE_HOUR_MS && anyAge > ONE_HOUR_MS) {
+		// Also gate on the last attempt: if usage never applies (expired auth, error body,
+		// unexpected shape) the update timestamps never move, which would otherwise fire a
+		// fetch on every tick.
+		const attemptAge = now - lastUsageAttemptMs;
+		if (!document.hidden && sseAge > ONE_HOUR_MS && anyAge > ONE_HOUR_MS && attemptAge > USAGE_POLL_MS) {
 			refreshUsage();
 		}
 	}

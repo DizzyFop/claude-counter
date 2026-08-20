@@ -38,7 +38,9 @@
 		const tokenizer = getTokenizer();
 		if (!tokenizer?.countTokens) return 0;
 		try {
-			return tokenizer.countTokens(text);
+			// allowedSpecial: 'all' stops the tokenizer throwing on literal special-token
+			// strings like <|endoftext|>, which previously zeroed the entire message.
+			return tokenizer.countTokens(text, { allowedSpecial: 'all' });
 		} catch {
 			return 0;
 		}
@@ -75,6 +77,20 @@
 		return true;
 	}
 
+	// Tool results can embed image blocks whose base64 payload is megabytes long, which
+	// tokenizes into a wildly inflated count. Drop the payload the same way top-level
+	// image/document blocks are skipped, keeping the surrounding shape intact.
+	function stripBinaryPayloads(value, depth = 0) {
+		if (value === null || typeof value !== 'object' || depth > 8) return value;
+		if (Array.isArray(value)) return value.map((v) => stripBinaryPayloads(v, depth + 1));
+		if (value.type === 'image' || value.type === 'document') return { type: value.type };
+		const out = {};
+		for (const key of Object.keys(value)) {
+			out[key] = stripBinaryPayloads(value[key], depth + 1);
+		}
+		return out;
+	}
+
 	function stringifyCountableContentItem(item) {
 		if (!isCountableContentItem(item)) return '';
 
@@ -95,7 +111,7 @@
 			const minimal = {
 				tool_use_id: item.tool_use_id,
 				is_error: item.is_error,
-				content: item.content
+				content: stripBinaryPayloads(item.content)
 			};
 			return stableStringify(minimal);
 		}

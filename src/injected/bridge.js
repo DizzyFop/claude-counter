@@ -85,6 +85,7 @@
 
 	async function handleConversationResponse({ orgId, conversationId }, response) {
 		try {
+			if (!response.ok) return;
 			const cloned = response.clone();
 			const data = await cloned.json();
 			post('cc:conversation', { orgId, conversationId, data });
@@ -155,6 +156,7 @@
 					method: 'GET',
 					credentials: 'include'
 				});
+				if (!res.ok) throw new Error(`Usage request failed: ${res.status}`);
 				const json = await res.json();
 				postResponse(requestId, true, json, null);
 				return;
@@ -170,6 +172,7 @@
 					method: 'GET',
 					credentials: 'include'
 				});
+				if (!res.ok) throw new Error(`Conversation request failed: ${res.status}`);
 				const json = await res.json();
 				post('cc:conversation', { orgId, conversationId, data: json });
 				postResponse(requestId, true, json, null);

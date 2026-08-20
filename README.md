@@ -23,10 +23,6 @@ A minimal browser extension that shows token count, cache timer, and usage bars 
 1. Download [`claude-counter-0.4.3.xpi`](../../releases/download/v0.4.3/claude-counter-0.4.3.xpi)
 2. Drag it into any Firefox window and click **Add**
 
-**Userscript**
-
-1. Install the userscript from [`claude-counter.user.js`](./userscript/claude-counter.user.js)
-
 ## How it works
 
 - Intercepts Claude's API responses to read conversation data and usage info
