@@ -239,7 +239,11 @@
 		if (!data) return;
 
 		const metrics = await CC.tokens.computeConversationMetrics(data);
-		ui.setConversationMetrics({ totalTokens: metrics.totalTokens, cachedUntil: metrics.cachedUntil });
+		ui.setConversationMetrics({
+			totalTokens: metrics.totalTokens,
+			cachedUntil: metrics.cachedUntil,
+			contextLimit: metrics.contextLimit
+		});
 	}
 
 	function handleMessageLimit(messageLimit) {
@@ -247,9 +251,14 @@
 		applyUsageUpdate(parsed, 'sse');
 	}
 
+	function handleLeafChanged({ conversationId }) {
+		if (conversationId && conversationId === currentConversationId) refreshConversation();
+	}
+
 	CC.bridge.on('cc:generation_start', handleGenerationStart);
 	CC.bridge.on('cc:conversation', handleConversationPayload);
 	CC.bridge.on('cc:message_limit', handleMessageLimit);
+	CC.bridge.on('cc:leaf_changed', handleLeafChanged);
 
 	async function handleUrlChange() {
 		currentConversationId = getConversationId();
@@ -280,46 +289,6 @@
 
 	const unobserveUrl = observeUrlChanges(handleUrlChange);
 	window.addEventListener('beforeunload', unobserveUrl);
-
-	// Refresh on branch navigation - watch for the branch indicator to change
-	let branchObserver = null;
-	document.addEventListener('click', (e) => {
-		if (!currentConversationId) return;
-		const btn = e.target.closest('button[aria-label="Previous version"], button[aria-label="Next version"]');
-		if (!btn) return;
-
-		// Find the branch indicator span (matches "X / Y" pattern) near the clicked button.
-		// It sits between the two arrows, so start from the parent - the buttons carry
-		// their own layout classes and closest() would match the button itself.
-		const container = btn.parentElement;
-		const spans = container?.querySelectorAll('span') || [];
-		const indicator = Array.from(spans).find((s) => /^\d+\s*\/\s*\d+$/.test(s.textContent.trim()));
-		if (!indicator) return;
-
-		const originalText = indicator.textContent;
-
-		// Clean up any existing observer
-		if (branchObserver) branchObserver.disconnect();
-
-		// Watch for the indicator text to change (with cleanup timeout)
-		branchObserver = new MutationObserver(() => {
-			if (indicator.textContent !== originalText) {
-				branchObserver.disconnect();
-				branchObserver = null;
-				refreshConversation();
-			}
-		});
-
-		branchObserver.observe(indicator, { childList: true, characterData: true, subtree: true });
-
-		// Clean up if nothing changes after 60 seconds
-		setTimeout(() => {
-			if (branchObserver) {
-				branchObserver.disconnect();
-				branchObserver = null;
-			}
-		}, 60000);
-	});
 
 	// Initial attach + fetches
 	handleUrlChange();

@@ -53,6 +53,23 @@
 		});
 	}
 
+	function formatTokenLimit(tokens) {
+		return tokens >= 1000000 ? `${tokens / 1000000}M` : `${Math.round(tokens / 1000)}K`;
+	}
+
+	function tokenTooltipText(contextLimit) {
+		const lines = [
+			"Approximate, not Claude's exact count.",
+			'Text uses a generic tokenizer, scaled up for newer models. Images and PDFs are estimated by size.',
+			"Excludes the hidden system prompt, tools, and Claude's thinking, so the real count is higher.",
+			'Invalid once Claude compacts the chat.'
+		];
+		if (contextLimit) {
+			lines.push(`The bar fills at ${formatTokenLimit(contextLimit)} tokens, this model's context window.`);
+		}
+		return lines.join('\n');
+	}
+
 	function setupTooltip(element, tooltip, { topOffset = 10, getText = null, anchor = null } = {}) {
 		if (!element || !tooltip) return;
 		if (element.hasAttribute('data-tooltip-setup')) return;
@@ -312,9 +329,7 @@
 		}
 
 		_setupTooltips() {
-			this.lengthTooltip = makeTooltip(
-				"Approximate — not Claude's exact count.\nText uses a generic tokenizer; images & PDFs are estimated by size.\nExcludes the hidden system prompt & tools, so real usage is higher.\nInvalid after context compaction.\nBar scale: 200k tokens (Claude compacts before then)."
-			);
+			this.lengthTooltip = makeTooltip(tokenTooltipText(null));
 			setupTooltip(
 				this.lengthGroup,
 				this.lengthTooltip,
@@ -323,7 +338,9 @@
 
 			setupTooltip(
 				this.cachedDisplay,
-				makeTooltip("Continuing a chat within ~5 min reuses Claude's cache (the timer resets each message).\nCached context is faster and may use less of your usage limit."),
+				makeTooltip(
+					"Estimated time left on Claude's prompt cache. Each reply restarts it.\nclaude.ai doesn't publish the length. Community testing found about an hour.\nReplying while it's cached uses less of your usage limit. Editing a message or changing the model or effort starts over."
+				),
 				{ topOffset: 8 }
 			);
 
@@ -409,7 +426,7 @@
 			}
 		}
 
-		setConversationMetrics({ totalTokens, cachedUntil } = {}) {
+		setConversationMetrics({ totalTokens, cachedUntil, contextLimit } = {}) {
 			this.pendingCache = false;
 
 			if (typeof totalTokens !== 'number') {
@@ -420,19 +437,19 @@
 				return;
 			}
 
-			const pct = Math.max(0, Math.min(100, (totalTokens / CC.CONST.CONTEXT_LIMIT_TOKENS) * 100));
+			const limit = contextLimit || CC.CONST.CONTEXT_LIMIT_TOKENS;
+			const pct = Math.max(0, Math.min(100, (totalTokens / limit) * 100));
 			this.lengthDisplay.textContent = `~${totalTokens.toLocaleString()} tokens`;
 
 			// Mini bar (hide when full - context is definitely compacted by then)
 			const isFull = pct >= 99.5;
+			if (this.lengthTooltip) {
+				this.lengthTooltip.textContent = tokenTooltipText(isFull ? null : limit);
+			}
 			if (isFull) {
 				this.lengthDisplay.style.opacity = '0.5';
 				this.lengthBar = null;
 				this.lengthGroup.replaceChildren(this.lengthDisplay);
-				if (this.lengthTooltip) {
-					this.lengthTooltip.textContent =
-						"Approximate — not Claude's exact count.\nExcludes the hidden system prompt & tools, so real usage is higher.\nThis count is invalid after compaction.";
-				}
 			} else {
 				this.lengthDisplay.style.opacity = '';
 				const bar = document.createElement('div');

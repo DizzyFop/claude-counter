@@ -192,22 +192,51 @@
 
 	const tokenCache = new TokenCache();
 
+	// --- Models ---
+	// Parses ids like "claude-opus-5-5" or "claude-haiku-4-5-20251001" into
+	// { family: 'opus', version: 5.5 }. The minor part is 1-2 digits so a date suffix is skipped.
+	function parseModel(model) {
+		const m = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-|$)/.exec(typeof model === 'string' ? model : '');
+		return m ? { family: m[1], version: Number(m[2]) + Number(m[3] || 0) / 10 } : null;
+	}
+
+	// Chat context window on paid plans (support.claude.com/en/articles/8606394, Sept 2026):
+	// 1M for Fable 5.1, Opus 5+ and Sonnet 5+; 500K for Fable 5 and Opus 4.6-4.8; 200K otherwise.
+	function contextWindowFor(model) {
+		const p = parseModel(model);
+		if (!p) return CC.CONST.CONTEXT_LIMIT_TOKENS;
+		if ((p.family === 'opus' || p.family === 'sonnet') && p.version >= 5) return 1000000;
+		if (p.family === 'fable') return p.version >= 5.1 ? 1000000 : 500000;
+		if (p.family === 'opus' && p.version >= 4.6) return 500000;
+		return CC.CONST.CONTEXT_LIMIT_TOKENS;
+	}
+
+	// Claude 4.7 and later use a newer tokenizer. Anthropic's figures (1M tokens ~ 555k words,
+	// vs ~750k on older models) put it at ~1.35x the old Claude tokenizer, which itself runs ~5%
+	// above o200k. Measured English prose lands at 1.45-1.6x o200k, code lower. 1.5 splits it.
+	const NEW_TOKENIZER_SCALE = 1.5;
+
+	function textTokenScaleFor(model) {
+		const p = parseModel(model);
+		return p && p.version >= 4.7 ? NEW_TOKENIZER_SCALE : 1;
+	}
+
 	// --- Non-text uploads (images, PDFs) ---
-	// claude.ai attaches uploads to a message via files_v2 (or legacy files), not in
-	// the text content, so the tokenizer never sees them. They're estimated by size:
-	//   - images: Anthropic bills ~ (width * height) / 750 tokens, capped once the
-	//             image is downscaled (~1.15 MP -> ~1600 tokens).
-	//   - PDFs:   each page is rendered + text-extracted; estimated per page.
+	// claude.ai attaches uploads to a message via files (files_v2 on older payloads), not in
+	// the text content, so the tokenizer never sees them.
+	//   - images: one token per 28x28 px patch. claude.ai's preview asset is already
+	//             downscaled to the standard limit (1568 px long edge, 1568 tokens).
+	//   - PDFs:   claude.ai reports a token_count per document; fall back to a per-page estimate.
 	// These are approximations and will differ from Claude's exact count.
-	const IMG_TOKENS_DIVISOR = 750;
-	const IMG_TOKENS_CAP = 1600;
+	const IMG_PATCH_PX = 28;
+	const IMG_TOKENS_CAP = 1568;
 	const DOC_TOKENS_PER_PAGE = 1600;
 
 	function estimateImageTokens(file) {
 		const w = file?.preview_asset?.image_width;
 		const h = file?.preview_asset?.image_height;
 		if (typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0) {
-			return Math.min(IMG_TOKENS_CAP, Math.ceil((w * h) / IMG_TOKENS_DIVISOR));
+			return Math.min(IMG_TOKENS_CAP, Math.ceil(w / IMG_PATCH_PX) * Math.ceil(h / IMG_PATCH_PX));
 		}
 		return IMG_TOKENS_CAP; // dimensions unknown: assume a full-size image
 	}
@@ -217,8 +246,11 @@
 		const files = v2 && v2.length ? v2 : (Array.isArray(message?.files) ? message.files : []);
 		let tokens = 0;
 		for (const file of files) {
+			const docTokens = file?.document_asset?.token_count;
 			const pageCount = file?.document_asset?.page_count;
-			if (typeof pageCount === 'number' && pageCount > 0) {
+			if (typeof docTokens === 'number' && docTokens > 0) {
+				tokens += docTokens;
+			} else if (typeof pageCount === 'number' && pageCount > 0) {
 				tokens += pageCount * DOC_TOKENS_PER_PAGE;
 			} else if (file?.preview_asset) {
 				tokens += estimateImageTokens(file);
@@ -227,31 +259,54 @@
 		return tokens;
 	}
 
+	// The prompt cache is refreshed when a request is processed, not when the reply finishes
+	// (claude.ai sets created_at on an assistant message at the end). A reply with tool calls
+	// spans several requests, and the last one starts right after the final tool_result, so use
+	// the start of the first block after it. Falls back to created_at.
+	function lastRequestMs(message) {
+		const blocks = Array.isArray(message?.content) ? message.content : [];
+		let anchorMs = null;
+		let nextStartsRequest = true;
+		for (const block of blocks) {
+			if (nextStartsRequest) {
+				const startMs = Date.parse(block?.start_timestamp);
+				if (Number.isFinite(startMs)) anchorMs = startMs;
+				nextStartsRequest = false;
+			}
+			if (block?.type === 'tool_result') nextStartsRequest = true;
+		}
+		return anchorMs ?? Date.parse(message?.created_at);
+	}
+
 	async function computeConversationMetrics(conversation) {
 		const trunk = buildTrunk(conversation);
 		const trunkIds = trunk.map((m) => m.uuid).filter(Boolean);
 		tokenCache.pruneToMessageIds(trunkIds);
 
-		let totalTokens = 0;
+		let textTokens = 0;
+		let fileTokens = 0;
 		let lastAssistantMs = null;
 
 		for (const msg of trunk) {
-			if (msg?.sender === 'assistant' && msg?.created_at) {
-				const msgMs = Date.parse(msg.created_at);
-				if (!lastAssistantMs || msgMs > lastAssistantMs) {
+			if (msg?.sender === 'assistant') {
+				const msgMs = lastRequestMs(msg);
+				if (Number.isFinite(msgMs) && (!lastAssistantMs || msgMs > lastAssistantMs)) {
 					lastAssistantMs = msgMs;
 				}
 			}
 
 			const msgText = stringifyMessageCountables(msg);
-			const msgTokens = msg?.uuid ? await tokenCache.getMessageTokens(msg.uuid, msgText) : countTokens(msgText);
-			totalTokens += msgTokens + estimateFileTokens(msg);
+			textTokens += msg?.uuid ? await tokenCache.getMessageTokens(msg.uuid, msgText) : countTokens(msgText);
+			fileTokens += estimateFileTokens(msg);
 		}
+		// Images and PDFs are already estimated in Claude tokens; only the o200k text count is scaled.
+		const totalTokens = Math.round(textTokens * textTokenScaleFor(conversation?.model)) + fileTokens;
 		const cachedUntil = lastAssistantMs ? lastAssistantMs + CC.CONST.CACHE_WINDOW_MS : null;
 
 		return {
 			trunkMessageCount: trunk.length,
 			totalTokens,
+			contextLimit: contextWindowFor(conversation?.model),
 			lastAssistantMs,
 			cachedUntil
 		};

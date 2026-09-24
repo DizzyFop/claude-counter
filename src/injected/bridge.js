@@ -46,6 +46,13 @@
 			}
 		}
 
+		// Switching branches (the version arrows) saves the new leaf here without refetching
+		// the tree. Once the server has it, tell the content script to refetch.
+		if (url && opts.method === 'PUT' && url.includes('/current_leaf_message_uuid') && response.ok) {
+			const meta = getConversationMeta(url);
+			if (meta) post('cc:leaf_changed', meta);
+		}
+
 		return response;
 	};
 

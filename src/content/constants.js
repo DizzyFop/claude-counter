@@ -12,7 +12,10 @@
 	});
 
 	CC.CONST = Object.freeze({
-		CACHE_WINDOW_MS: 5 * 60 * 1000,
+		// claude.ai doesn't publish its cache lifetime (the API default is 5 minutes). Usage
+		// testing on claude.ai found 1 hour, refreshed by each reply:
+		// github.com/lugia19/Claude-Usage-Extension/issues/62 (May 2026, re-tested July 2026).
+		CACHE_WINDOW_MS: 60 * 60 * 1000,
 		CONTEXT_LIMIT_TOKENS: 200000
 	});
 
