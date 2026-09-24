@@ -256,7 +256,7 @@
 
 		// Attach usage line and header independently - they have different anchor elements
 		// and CHAT_TITLE_SPLIT doesn't exist on home/new pages
-		waitForElement(CC.DOM.MODEL_SELECTOR_DROPDOWN, 60000).then((el) => {
+		waitForElement(CC.DOM.COMPOSER, 60000).then((el) => {
 			if (el) ui.attachUsageLine();
 		});
 		waitForElement(CC.DOM.CHAT_TITLE_SPLIT, 60000).then((el) => {
@@ -285,11 +285,13 @@
 	let branchObserver = null;
 	document.addEventListener('click', (e) => {
 		if (!currentConversationId) return;
-		const btn = e.target.closest('button[aria-label="Previous"], button[aria-label="Next"]');
+		const btn = e.target.closest('button[aria-label="Previous version"], button[aria-label="Next version"]');
 		if (!btn) return;
 
-		// Find the branch indicator span (matches "X / Y" pattern) near the clicked button
-		const container = btn.closest('.inline-flex');
+		// Find the branch indicator span (matches "X / Y" pattern) near the clicked button.
+		// It sits between the two arrows, so start from the parent - the buttons carry
+		// their own layout classes and closest() would match the button itself.
+		const container = btn.parentElement;
 		const spans = container?.querySelectorAll('span') || [];
 		const indicator = Array.from(spans).find((s) => /^\d+\s*\/\s*\d+$/.test(s.textContent.trim()));
 		if (!indicator) return;

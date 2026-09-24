@@ -232,7 +232,7 @@
 
 				if (usageMissing && !usageReattachPending) {
 					usageReattachPending = true;
-					CC.waitForElement(CC.DOM.MODEL_SELECTOR_DROPDOWN, 60000).then((el) => {
+					CC.waitForElement(CC.DOM.COMPOSER, 60000).then((el) => {
 						usageReattachPending = false;
 						if (el) this.attachUsageLine();
 					});
@@ -377,33 +377,22 @@
 
 		attachUsageLine() {
 			if (!this.usageLine) return;
-			const modelSelector = document.querySelector(CC.DOM.MODEL_SELECTOR_DROPDOWN);
-			if (!modelSelector) return;
-			const gridContainer = modelSelector.closest('[data-testid="chat-input-grid-container"]');
-			const gridArea = modelSelector.closest('[data-testid="chat-input-grid-area"]');
-			const findToolbarRow = (el, stopAt) => {
-				let cur = el;
-				while (cur && cur !== document.body) {
-					if (stopAt && cur === stopAt) break;
-					if (cur !== el && cur.nodeType === 1) {
-						const style = window.getComputedStyle(cur);
-						if (style.display === 'flex' && style.flexDirection === 'row') {
-							const buttons = cur.querySelectorAll('button').length;
-							if (buttons > 1) return cur;
-						}
-					}
-					cur = cur.parentElement;
-				}
-				return null;
-			};
+			const composer = document.querySelector(CC.DOM.COMPOSER);
+			if (!composer) return;
 
-			const toolbarRow =
-				(gridContainer ? findToolbarRow(modelSelector, gridArea || gridContainer) : null) ||
-				findToolbarRow(modelSelector) ||
-				modelSelector.parentElement?.parentElement?.parentElement;
-			if (!toolbarRow) return;
-			if (toolbarRow.nextElementSibling !== this.usageLine) {
-				toolbarRow.after(this.usageLine);
+			// The composer is two stacked parts: the input box, and the chin below it
+			// (disclaimer, model selector). The action buttons are absolutely positioned
+			// inside the box, so the usage line has to be the box's last child to land
+			// under them instead of on top of them.
+			const actions = composer.querySelector(CC.DOM.COMPOSER_ACTIONS);
+			const children = Array.from(composer.children);
+			const box =
+				(actions ? children.find((el) => el.contains(actions)) : null) ||
+				children.find((el) => el !== this.usageLine && !el.matches(CC.DOM.COMPOSER_CHIN));
+			const host = box || composer;
+
+			if (host.lastElementChild !== this.usageLine) {
+				host.appendChild(this.usageLine);
 			}
 			this.refreshProgressChrome();
 		}

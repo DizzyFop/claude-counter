@@ -5,7 +5,9 @@
 
 	CC.DOM = Object.freeze({
 		CHAT_TITLE_SPLIT: '[data-testid="chat-title-split"]',
-		MODEL_SELECTOR_DROPDOWN: '[data-testid="model-selector-dropdown"]',
+		COMPOSER: '[data-cds="ChatComposer"]',
+		COMPOSER_ACTIONS: '[data-cds="ChatComposerActions"]',
+		COMPOSER_CHIN: '[data-cds="ChatComposerChin"]',
 		BRIDGE_SCRIPT_ID: 'cc-bridge-script'
 	});
 
