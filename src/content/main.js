@@ -162,6 +162,18 @@
 	});
 	ui.initialize();
 
+	// Settings from the toolbar popup
+	const storage = (globalThis.browser || globalThis.chrome)?.storage;
+	const loadSettings = () =>
+		storage?.local.get(CC.SETTINGS_DEFAULTS).then((settings) => {
+			ui.setUsageStyle(settings.usageStyle);
+			ui.setAlwaysShowLabels(settings.alwaysShowLabels);
+		});
+	loadSettings();
+	storage?.onChanged.addListener((changes, area) => {
+		if (area === 'local') loadSettings();
+	});
+
 	// Bridge must be ready before we can make requests
 	const bridgeReady = CC.injectBridgeOnce();
 

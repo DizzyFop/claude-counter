@@ -1,0 +1,78 @@
+:root {
+	color-scheme: light dark;
+}
+
+body {
+	width: 260px;
+	margin: 0;
+	padding: 14px 16px 12px;
+	font: 13px/1.4 system-ui, sans-serif;
+	background: #faf9f5;
+	color: #141413;
+}
+
+@media (prefers-color-scheme: dark) {
+	body {
+		background: #1f1e1d;
+		color: #f0efec;
+	}
+}
+
+h1 {
+	margin: 0 0 12px;
+	font-size: 14px;
+	font-weight: 600;
+}
+
+fieldset {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+legend {
+	margin-bottom: 8px;
+	padding: 0;
+	font-size: 12px;
+	opacity: 0.7;
+}
+
+.setting {
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+	cursor: pointer;
+}
+
+.setting--sub {
+	margin-left: 24px;
+}
+
+.setting input {
+	margin: 2px 0 0;
+}
+
+.setting:has(input:disabled) {
+	cursor: default;
+	opacity: 0.5;
+}
+
+.setting__name,
+.setting__hint {
+	display: block;
+}
+
+.setting__hint {
+	margin-top: 2px;
+	font-size: 12px;
+	opacity: 0.7;
+}
+
+footer {
+	margin-top: 14px;
+	font-size: 11px;
+	opacity: 0.6;
+}

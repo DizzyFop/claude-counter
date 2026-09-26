@@ -8,7 +8,8 @@ A minimal browser extension that shows token count, cache timer, and usage bars 
 
 - **Token count.** Approximate token count for the current conversation, with a mini progress bar against the model's context window (1M, 500K or 200K tokens)
 - **Cache timer.** Countdown showing roughly how long the conversation stays cached, so your next message uses less of your limit. claude.ai doesn't publish the cache length; [community testing](https://github.com/lugia19/Claude-Usage-Extension/issues/62) found about an hour.
-- **Usage bars.** Session (5-hour) and weekly (7-day) usage from Claude's own API, with progress bars and reset countdowns. On plans that include Fable, the weekly bar also shows the Fable limit.
+- **Usage lines.** Session (5-hour) usage runs along the top edge of the message box and weekly (7-day) usage along the bottom, from Claude's own API. A white tick marks how far into each window you are. Hover the box to see the numbers and reset countdowns. On plans that include Fable, a second line under the weekly one shows the Fable limit.
+- **Settings.** Click the extension's toolbar button to keep the usage text always showing, or to switch back to the original bars inside the message box.
 
 ## Installation
 
@@ -33,6 +34,7 @@ Install [Claude Counter from Firefox Add-ons](https://addons.mozilla.org/en-US/f
 
 - All data stays local. No external servers, no tracking
 - Reads your `lastActiveOrg` cookie to query Claude's `/usage` endpoint
+- Saves your settings in the browser's extension storage, on this device only
 - Makes requests only to `claude.ai`
 
 ## Credits

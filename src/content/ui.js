@@ -137,6 +137,233 @@
 		return tip;
 	}
 
+	// --- Usage designs ---
+	// setUsage() boils claude.ai's data down to { session, weekly, fable }. session and weekly are
+	// { pct, width, resetMs, startMs } or null; fable is { pct, width, name, state } or null.
+	// The active design renders from it on every update and every tick.
+
+	function windowText(label, w, extra = '') {
+		const reset = w.resetMs ? ` · resets in ${formatResetCountdown(w.resetMs)}` : '';
+		return `${label}: ${w.pct}%${extra}${reset}`;
+	}
+
+	const sessionTooltipText = (w) => (w?.resetMs ? `Resets at ${formatClockTime(w.resetMs)}` : '5-hour session window');
+	const weeklyTooltipText = (w) => (w?.resetMs ? `Resets ${formatDayTime(w.resetMs)}` : '7-day usage window');
+
+	// How far into the window "now" is, for the white marker.
+	function elapsedPct(w) {
+		if (!w?.startMs || !w.resetMs) return null;
+		const total = w.resetMs - w.startMs;
+		const elapsed = Math.max(0, Math.min(total, Date.now() - w.startMs));
+		return total > 0 ? (elapsed / total) * 100 : 0;
+	}
+
+	function renderFill(fill, w) {
+		fill.style.width = `${w ? w.width : 0}%`;
+		fill.classList.toggle('cc-warn', !!w && w.width >= 90);
+	}
+
+	function renderFableFill(fill, fable) {
+		fill.style.width = `${fable ? fable.width : 0}%`;
+		fill.classList.toggle('cc-warn', fable?.state === 'warn');
+		fill.classList.toggle('cc-crit', fable?.state === 'crit');
+	}
+
+	function renderMarker(marker, w) {
+		const pct = elapsedPct(w);
+		marker.classList.toggle('cc-hidden', pct == null);
+		if (pct != null) marker.style.left = `${pct}%`;
+	}
+
+	function applyBarChrome(el, chrome, fillWarn) {
+		el.style.setProperty('--cc-stroke', chrome.strokeColor);
+		el.style.setProperty('--cc-fill', chrome.fillColor);
+		el.style.setProperty('--cc-fill-warn', fillWarn ?? chrome.fillColor);
+		el.style.setProperty('--cc-marker', chrome.markerColor);
+	}
+
+	// Fable: teal (normal) → gold (warning) → red (critical), tracking claude.ai's severity
+	// so the color matches what the app shows.
+	function applyFableChrome(el, chrome) {
+		el.style.setProperty('--cc-fill-fable', chrome.fableColor);
+		el.style.setProperty('--cc-fill-fable-warn', chrome.fableWarnColor);
+		el.style.setProperty('--cc-fill-fable-crit', CC.COLORS.RED_WARNING);
+	}
+
+	function make(tag, className, ...children) {
+		const node = document.createElement(tag);
+		node.className = className;
+		node.append(...children);
+		return node;
+	}
+
+	// The original design: a row of two outlined bars inside the bottom of the message box.
+	// The weekly bar splits in half when there's a Fable limit.
+	class BarsView {
+		constructor(ui) {
+			this.sessionText = make('span', 'cc-usageText');
+			this.sessionFill = make('div', 'cc-bar__fill');
+			this.sessionMarker = make('div', 'cc-bar__marker cc-hidden');
+			this.sessionBar = make('div', 'cc-bar cc-bar--usage', this.sessionFill, this.sessionMarker);
+
+			this.weeklyText = make('span', 'cc-usageText');
+			this.weeklyFill = make('div', 'cc-bar__fill cc-bar__fill--top');
+			this.fableFill = make('div', 'cc-bar__fill cc-bar__fill--bottom');
+			this.weeklyMarker = make('div', 'cc-bar__marker cc-hidden');
+			this.weeklyBar = make('div', 'cc-bar cc-bar--usage', this.weeklyFill, this.fableFill, this.weeklyMarker);
+
+			this.sessionGroup = make('div', 'cc-usageGroup', this.sessionText, this.sessionBar);
+			this.weeklyGroup = make('div', 'cc-usageGroup cc-usageGroup--weekly', this.weeklyBar, this.weeklyText);
+
+			this.root = make(
+				'div',
+				'text-text-400 text-[11px] cc-usageRow cc-hidden flex flex-row items-center gap-3 w-full',
+				this.sessionGroup,
+				this.weeklyGroup
+			);
+			ui.bindUsageRefresh(this.root, 'cc-usageRow--dim');
+
+			setupTooltip(this.sessionGroup, makeTooltip(''), {
+				topOffset: 8,
+				anchor: this.sessionBar,
+				getText: () => sessionTooltipText(ui.usage.session)
+			});
+			setupTooltip(this.weeklyGroup, makeTooltip(''), {
+				topOffset: 8,
+				anchor: this.weeklyBar,
+				getText: () => {
+					const { weekly, fable } = ui.usage;
+					const base = weeklyTooltipText(weekly);
+					return fable ? `All models: ${weekly.pct}% · ${fable.name}: ${fable.pct}%\n${base}` : base;
+				}
+			});
+		}
+
+		// The action buttons are absolutely positioned inside the box, so the row has to be
+		// the box's last child to land under them instead of on top of them.
+		attach(box) {
+			if (box.lastElementChild !== this.root) box.appendChild(this.root);
+		}
+
+		detach() {
+			this.root.remove();
+		}
+
+		applyChrome(chrome) {
+			applyBarChrome(this.sessionBar, chrome, CC.COLORS.RED_WARNING);
+			applyBarChrome(this.weeklyBar, chrome, CC.COLORS.RED_WARNING);
+			applyFableChrome(this.weeklyBar, chrome);
+		}
+
+		render({ session, weekly, fable }) {
+			this.root.classList.toggle('cc-hidden', !session && !weekly);
+
+			this.sessionText.textContent = session ? windowText('Session', session) : '';
+			renderFill(this.sessionFill, session);
+			this.sessionFill.classList.toggle('cc-full', !!session && session.width >= 99.5);
+			renderMarker(this.sessionMarker, session);
+
+			this.weeklyGroup.classList.toggle('cc-hidden', !weekly);
+			this.sessionGroup.classList.toggle('cc-usageGroup--single', !weekly);
+			this.weeklyText.textContent = weekly ? windowText('Weekly', weekly) : '';
+			renderFill(this.weeklyFill, weekly);
+			this.weeklyFill.classList.toggle('cc-full', !!weekly && weekly.width >= 99.5);
+			renderMarker(this.weeklyMarker, weekly);
+
+			this.weeklyBar.classList.toggle('cc-bar--split', !!fable);
+			renderFableFill(this.fableFill, fable);
+			this.fableFill.classList.toggle('cc-full', !!fable && fable.width >= 99.5);
+		}
+	}
+
+	// Hairlines on the message box: session along the top edge, weekly (plus a Fable lane)
+	// along the bottom. Labels sit above the box and show while it's hovered, or all the time
+	// with the setting on. A line past 90% thickens and keeps its label up.
+	class LinesView {
+		constructor(ui) {
+			this.sessionFill = make('div', 'cc-edge__fill');
+			this.sessionMarker = make('div', 'cc-edge__marker cc-hidden');
+			this.sessionEdge = make('div', 'cc-edge cc-edge--top', this.sessionFill, this.sessionMarker);
+
+			this.weeklyFill = make('div', 'cc-edge__fill');
+			this.fableFill = make('div', 'cc-edge__fill');
+			this.weeklyMarker = make('div', 'cc-edge__marker cc-hidden');
+			this.weeklyEdge = make(
+				'div',
+				'cc-edge cc-edge--bottom',
+				make('div', 'cc-edge__lane', this.weeklyFill),
+				make('div', 'cc-edge__lane cc-edge__lane--fable', this.fableFill),
+				this.weeklyMarker
+			);
+
+			this.root = make('div', 'cc-edges cc-hidden', this.sessionEdge, this.weeklyEdge);
+
+			this.sessionText = make('span', 'cc-edgeLabel');
+			this.weeklyText = make('span', 'cc-edgeLabel');
+			this.labels = make(
+				'div',
+				'text-text-400 text-[11px] cc-edgeLabels cc-hidden',
+				this.sessionText,
+				this.weeklyText
+			);
+			ui.bindUsageRefresh(this.labels, 'cc-edgeLabels--dim');
+
+			setupTooltip(this.sessionText, makeTooltip(''), {
+				topOffset: 8,
+				getText: () => sessionTooltipText(ui.usage.session)
+			});
+			setupTooltip(this.weeklyText, makeTooltip(''), {
+				topOffset: 8,
+				getText: () => weeklyTooltipText(ui.usage.weekly)
+			});
+		}
+
+		// Absolutely positioned against the box, which is already position: relative.
+		attach(box) {
+			if (this.root.parentElement !== box) box.append(this.root, this.labels);
+		}
+
+		detach() {
+			this.root.remove();
+			this.labels.remove();
+		}
+
+		setAlwaysShow(on) {
+			this.labels.classList.toggle('cc-edgeLabels--always', !!on);
+		}
+
+		applyChrome(chrome) {
+			applyBarChrome(this.root, chrome, CC.COLORS.RED_WARNING);
+			applyFableChrome(this.root, chrome);
+			this.root.style.setProperty('--cc-track', chrome.trackColor);
+		}
+
+		render({ session, weekly, fable }) {
+			const hasAny = !!(session || weekly);
+			this.root.classList.toggle('cc-hidden', !hasAny);
+			this.labels.classList.toggle('cc-hidden', !hasAny);
+
+			const sessionWarn = !!session && session.width >= 90;
+			this.sessionText.textContent = session ? windowText('Session', session) : '';
+			renderFill(this.sessionFill, session);
+			renderMarker(this.sessionMarker, session);
+			this.sessionEdge.classList.toggle('cc-edge--warn', sessionWarn);
+			this.sessionText.classList.toggle('cc-show', sessionWarn);
+
+			const weeklyWarn = !!weekly && (weekly.width >= 90 || fable?.state === 'crit');
+			const fableText = fable ? ` · ${fable.name}: ${fable.pct}%` : '';
+			this.weeklyEdge.classList.toggle('cc-hidden', !weekly);
+			this.weeklyText.classList.toggle('cc-hidden', !weekly);
+			this.weeklyText.textContent = weekly ? windowText('Weekly', weekly, fableText) : '';
+			renderFill(this.weeklyFill, weekly);
+			renderMarker(this.weeklyMarker, weekly);
+			this.weeklyEdge.classList.toggle('cc-edge--split', !!fable);
+			renderFableFill(this.fableFill, fable);
+			this.weeklyEdge.classList.toggle('cc-edge--warn', weeklyWarn);
+			this.weeklyText.classList.toggle('cc-show', weeklyWarn);
+		}
+	}
+
 	class CounterUI {
 		constructor({ onUsageRefresh } = {}) {
 			this.onUsageRefresh = onUsageRefresh || null;
@@ -151,19 +378,9 @@
 			this.lastCachedUntilMs = null;
 			this.pendingCache = false;
 
-			this.usageLine = null;
-			this.sessionUsageSpan = null;
-			this.weeklyUsageSpan = null;
-			this.sessionBar = null;
-			this.sessionBarFill = null;
-			this.weeklyBar = null;
-			this.weeklyBarFill = null;
-			this.sessionResetMs = null;
-			this.weeklyResetMs = null;
-			this.sessionMarker = null;
-			this.weeklyMarker = null;
-			this.sessionWindowStartMs = null;
-			this.weeklyWindowStartMs = null;
+			this.usage = { session: null, weekly: null, fable: null };
+			this.usageStyle = CC.SETTINGS_DEFAULTS.usageStyle;
+			this.views = null;
 			this.refreshingUsage = false;
 
 			this.domObserver = null;
@@ -179,6 +396,7 @@
 				strokeColor: isDark ? CC.COLORS.PROGRESS_OUTLINE_DARK : CC.COLORS.PROGRESS_OUTLINE_LIGHT,
 				fillColor: isDark ? CC.COLORS.PROGRESS_FILL_DARK : CC.COLORS.PROGRESS_FILL_LIGHT,
 				markerColor: isDark ? CC.COLORS.PROGRESS_MARKER_DARK : CC.COLORS.PROGRESS_MARKER_LIGHT,
+				trackColor: isDark ? CC.COLORS.EDGE_TRACK_DARK : CC.COLORS.EDGE_TRACK_LIGHT,
 				fableColor: isDark ? CC.COLORS.FABLE_FILL_DARK : CC.COLORS.FABLE_FILL_LIGHT,
 				fableWarnColor: isDark ? CC.COLORS.FABLE_WARN_DARK : CC.COLORS.FABLE_WARN_LIGHT,
 				boldColor: isDark ? CC.COLORS.BOLD_DARK : CC.COLORS.BOLD_LIGHT
@@ -186,25 +404,10 @@
 		}
 
 		refreshProgressChrome() {
-			const { strokeColor, fillColor, markerColor, fableColor, fableWarnColor } = this.getProgressChrome();
-
-			const applyBarChrome = (bar, { fillWarn } = {}) => {
-				if (!bar) return;
-				bar.style.setProperty('--cc-stroke', strokeColor);
-				bar.style.setProperty('--cc-fill', fillColor);
-				bar.style.setProperty('--cc-fill-warn', fillWarn ?? fillColor);
-				bar.style.setProperty('--cc-marker', markerColor);
-			};
-
-			applyBarChrome(this.lengthBar, { fillWarn: fillColor });
-			applyBarChrome(this.sessionBar, { fillWarn: CC.COLORS.RED_WARNING });
-			applyBarChrome(this.weeklyBar, { fillWarn: CC.COLORS.RED_WARNING });
-			// Fable (bottom half of the weekly bar): teal (normal) → gold (warning) → red (critical),
-			// tracking claude.ai's severity so the color matches what the app shows.
-			if (this.weeklyBar) {
-				this.weeklyBar.style.setProperty('--cc-fill-fable', fableColor);
-				this.weeklyBar.style.setProperty('--cc-fill-fable-warn', fableWarnColor);
-				this.weeklyBar.style.setProperty('--cc-fill-fable-crit', CC.COLORS.RED_WARNING);
+			const chrome = this.getProgressChrome();
+			if (this.lengthBar) applyBarChrome(this.lengthBar, chrome);
+			if (this.views) {
+				for (const view of Object.values(this.views)) view.applyChrome(chrome);
 			}
 		}
 
@@ -224,12 +427,32 @@
 			this.lengthGroup.appendChild(this.lengthDisplay);
 			this.headerDisplay.appendChild(this.lengthGroup);
 
-			// Usage line (session + weekly)
-			this._initUsageLine();
+			// Usage display, in either design
+			this.views = { bars: new BarsView(this), lines: new LinesView(this) };
+			this.refreshProgressChrome();
 
 			this._setupTooltips();
 			this._observeDom();
 			this._observeTheme();
+		}
+
+		_activeView() {
+			return this.views ? this.views[this.usageStyle] : null;
+		}
+
+		// Clicking the usage text refreshes it from claude.ai.
+		bindUsageRefresh(el, dimClass) {
+			el.addEventListener('click', async () => {
+				if (!this.onUsageRefresh || this.refreshingUsage) return;
+				this.refreshingUsage = true;
+				el.classList.add(dimClass);
+				try {
+					await this.onUsageRefresh();
+				} finally {
+					el.classList.remove(dimClass);
+					this.refreshingUsage = false;
+				}
+			});
 		}
 
 		_observeTheme() {
@@ -244,7 +467,7 @@
 			let headerReattachPending = false;
 
 			this.domObserver = new MutationObserver(() => {
-				const usageMissing = this.usageLine && !document.contains(this.usageLine);
+				const usageMissing = this.views && !document.contains(this._activeView().root);
 				const headerMissing = !document.contains(this.headerContainer);
 
 				if (usageMissing && !usageReattachPending) {
@@ -266,68 +489,6 @@
 			this.domObserver.observe(document.body, { childList: true, subtree: true });
 		}
 
-		_initUsageLine() {
-			this.usageLine = document.createElement('div');
-			this.usageLine.className =
-				'text-text-400 text-[11px] cc-usageRow cc-hidden flex flex-row items-center gap-3 w-full';
-
-			this.sessionUsageSpan = document.createElement('span');
-			this.sessionUsageSpan.className = 'cc-usageText';
-
-			this.sessionBar = document.createElement('div');
-			this.sessionBar.className = 'cc-bar cc-bar--usage';
-			this.sessionBarFill = document.createElement('div');
-			this.sessionBarFill.className = 'cc-bar__fill';
-			this.sessionMarker = document.createElement('div');
-			this.sessionMarker.className = 'cc-bar__marker cc-hidden';
-			this.sessionMarker.style.left = '0%';
-			this.sessionBar.appendChild(this.sessionBarFill);
-			this.sessionBar.appendChild(this.sessionMarker);
-
-			this.weeklyUsageSpan = document.createElement('span');
-			this.weeklyUsageSpan.className = 'cc-usageText';
-
-			this.weeklyBar = document.createElement('div');
-			this.weeklyBar.className = 'cc-bar cc-bar--usage';
-			this.weeklyBarFill = document.createElement('div');
-			this.weeklyBarFill.className = 'cc-bar__fill cc-bar__fill--top';
-			this.weeklyFableFill = document.createElement('div');
-			this.weeklyFableFill.className = 'cc-bar__fill cc-bar__fill--bottom';
-			this.weeklyMarker = document.createElement('div');
-			this.weeklyMarker.className = 'cc-bar__marker cc-hidden';
-			this.weeklyMarker.style.left = '0%';
-			this.weeklyBar.appendChild(this.weeklyBarFill);
-			this.weeklyBar.appendChild(this.weeklyFableFill);
-			this.weeklyBar.appendChild(this.weeklyMarker);
-
-			this.sessionGroup = document.createElement('div');
-			this.sessionGroup.className = 'cc-usageGroup';
-			this.sessionGroup.appendChild(this.sessionUsageSpan);
-			this.sessionGroup.appendChild(this.sessionBar);
-
-			this.weeklyGroup = document.createElement('div');
-			this.weeklyGroup.className = 'cc-usageGroup cc-usageGroup--weekly';
-			this.weeklyGroup.appendChild(this.weeklyBar);
-			this.weeklyGroup.appendChild(this.weeklyUsageSpan);
-
-			this.usageLine.appendChild(this.sessionGroup);
-			this.usageLine.appendChild(this.weeklyGroup);
-
-			this.refreshProgressChrome();
-
-			this.usageLine.addEventListener('click', async () => {
-				if (!this.onUsageRefresh || this.refreshingUsage) return;
-				this.refreshingUsage = true;
-				this.usageLine.classList.add('cc-usageRow--dim');
-				try {
-					await this.onUsageRefresh();
-				} finally {
-					this.usageLine.classList.remove('cc-usageRow--dim');
-					this.refreshingUsage = false;
-				}
-			});
-		}
-
 		_setupTooltips() {
 			this.lengthTooltip = makeTooltip(tokenTooltipText(null));
 			setupTooltip(
@@ -342,37 +503,6 @@
 					"Estimated time left on Claude's prompt cache. Each reply restarts it.\nclaude.ai doesn't publish the length. Community testing found about an hour.\nReplying while it's cached uses less of your usage limit. Editing a message or changing the model or effort starts over."
 				),
 				{ topOffset: 8 }
-			);
-
-			setupTooltip(
-				this.sessionGroup,
-				makeTooltip(''),
-				{
-					topOffset: 8,
-					anchor: this.sessionBar,
-					getText: () =>
-						this.sessionResetMs
-							? `Resets at ${formatClockTime(this.sessionResetMs)}`
-							: '5-hour session window',
-				}
-			);
-
-			setupTooltip(
-				this.weeklyGroup,
-				makeTooltip(''),
-				{
-					topOffset: 8,
-					anchor: this.weeklyBar,
-					getText: () => {
-						const base = this.weeklyResetMs
-							? `Resets ${formatDayTime(this.weeklyResetMs)}`
-							: '7-day usage window';
-						if (this.fablePct != null) {
-							return `All models: ${this.weeklyPct}% · ${this.fableDisplayName}: ${this.fablePct}%\n${base}`;
-						}
-						return base;
-					},
-				}
 			);
 		}
 
@@ -393,25 +523,37 @@
 		}
 
 		attachUsageLine() {
-			if (!this.usageLine) return;
+			if (!this.views) return;
 			const composer = document.querySelector(CC.DOM.COMPOSER);
 			if (!composer) return;
 
 			// The composer is two stacked parts: the input box, and the chin below it
-			// (disclaimer, model selector). The action buttons are absolutely positioned
-			// inside the box, so the usage line has to be the box's last child to land
-			// under them instead of on top of them.
+			// (disclaimer, model selector). Both designs go inside the box.
 			const actions = composer.querySelector(CC.DOM.COMPOSER_ACTIONS);
 			const children = Array.from(composer.children);
 			const box =
 				(actions ? children.find((el) => el.contains(actions)) : null) ||
-				children.find((el) => el !== this.usageLine && !el.matches(CC.DOM.COMPOSER_CHIN));
+				children.find((el) => !el.matches(`${CC.DOM.COMPOSER_CHIN}, .cc-usageRow, .cc-edges, .cc-edgeLabels`));
 			const host = box || composer;
 
-			if (host.lastElementChild !== this.usageLine) {
-				host.appendChild(this.usageLine);
+			const active = this._activeView();
+			for (const view of Object.values(this.views)) {
+				if (view !== active) view.detach();
 			}
+			active.attach(host);
 			this.refreshProgressChrome();
+		}
+
+		setUsageStyle(style) {
+			const next = style === 'bars' ? 'bars' : 'lines';
+			if (next === this.usageStyle) return;
+			this.usageStyle = next;
+			this.attachUsageLine();
+			this._activeView()?.render(this.usage);
+		}
+
+		setAlwaysShowLabels(on) {
+			this.views?.lines.setAlwaysShow(on);
 		}
 
 		setPendingCache(pending) {
@@ -512,116 +654,39 @@
 		}
 
 		setUsage(usage) {
-			this.refreshProgressChrome();
-			const session = usage?.five_hour || null;
-			const weekly = usage?.seven_day || null;
-			const hasAnyUsage =
-				!!(session && typeof session.utilization === 'number') || !!(weekly && typeof weekly.utilization === 'number');
-			this.usageLine?.classList.toggle('cc-hidden', !hasAnyUsage);
+			const clamp = (n) => Math.max(0, Math.min(100, n));
+			const toWindow = (w, hours) => {
+				if (!w || typeof w.utilization !== 'number') return null;
+				const resetMs = w.resets_at ? Date.parse(w.resets_at) : null;
+				return {
+					pct: Math.round(w.utilization * 10) / 10,
+					width: clamp(w.utilization),
+					resetMs,
+					startMs: resetMs ? resetMs - hours * 60 * 60 * 1000 : null
+				};
+			};
+			const session = toWindow(usage?.five_hour, 5);
+			const weekly = toWindow(usage?.seven_day, 24 * 7);
 
-			if (session && typeof session.utilization === 'number') {
-				const rawPct = session.utilization;
-				const pct = Math.round(rawPct * 10) / 10;
-				this.sessionResetMs = session.resets_at ? Date.parse(session.resets_at) : null;
-				this.sessionWindowStartMs = this.sessionResetMs ? this.sessionResetMs - 5 * 60 * 60 * 1000 : null;
-				const resetText = this.sessionResetMs ? ` · resets in ${formatResetCountdown(this.sessionResetMs)}` : '';
-				this.sessionUsageSpan.textContent = `Session: ${pct}%${resetText}`;
-
-				const width = Math.max(0, Math.min(100, rawPct));
-				this.sessionBarFill.style.width = `${width}%`;
-				this.sessionBarFill.classList.toggle('cc-warn', width >= 90);
-				this.sessionBarFill.classList.toggle('cc-full', width >= 99.5);
-			} else {
-				this.sessionUsageSpan.textContent = '';
-				this.sessionBarFill.style.width = '0%';
-				this.sessionBarFill.classList.remove('cc-warn', 'cc-full');
-				this.sessionResetMs = null;
-				this.sessionWindowStartMs = null;
-			}
-
-			const hasWeekly = weekly && typeof weekly.utilization === 'number';
-			this.weeklyGroup?.classList.toggle('cc-hidden', !hasWeekly);
-			this.sessionGroup?.classList.toggle('cc-usageGroup--single', !hasWeekly);
-
-			if (hasWeekly) {
-				this.weeklyUsageSpan.classList.remove('cc-hidden');
-				this.weeklyBar.classList.remove('cc-hidden');
-
-				const rawPct = weekly.utilization;
-				const pct = Math.round(rawPct * 10) / 10;
-				this.weeklyPct = pct;
-				this.weeklyResetMs = weekly.resets_at ? Date.parse(weekly.resets_at) : null;
-				this.weeklyWindowStartMs = this.weeklyResetMs ? this.weeklyResetMs - 7 * 24 * 60 * 60 * 1000 : null;
-				const resetText = this.weeklyResetMs ? ` · resets in ${formatResetCountdown(this.weeklyResetMs)}` : '';
-				this.weeklyUsageSpan.textContent = `Weekly: ${pct}%${resetText}`;
-
-				const width = Math.max(0, Math.min(100, rawPct));
-				this.weeklyBarFill.style.width = `${width}%`;
-				this.weeklyBarFill.classList.toggle('cc-warn', width >= 90);
-				this.weeklyBarFill.classList.toggle('cc-full', width >= 99.5);
-			} else {
-				this.weeklyUsageSpan.classList.add('cc-hidden');
-				this.weeklyBar.classList.add('cc-hidden');
-				this.weeklyPct = null;
-				this.weeklyResetMs = null;
-				this.weeklyWindowStartMs = null;
-				this.weeklyBarFill.classList.remove('cc-warn', 'cc-full');
-			}
-
-			// Fable cap: bottom half of the weekly bar (only when a Fable limit is present).
-			const fable = usage?.fable || null;
-			const hasFable = hasWeekly && fable && typeof fable.utilization === 'number';
-			this.weeklyBar.classList.toggle('cc-bar--split', !!hasFable);
-			if (hasFable) {
-				this.fablePct = Math.round(fable.utilization * 10) / 10;
-				this.fableDisplayName = fable.display_name || 'Fable';
-				const fableWidth = Math.max(0, Math.min(100, fable.utilization));
-				this.weeklyFableFill.style.width = `${fableWidth}%`;
-
+			// Fable cap (only alongside a weekly window).
+			const f = usage?.fable;
+			let fable = null;
+			if (weekly && f && typeof f.utilization === 'number') {
+				const width = clamp(f.utilization);
 				// Color by claude.ai's severity when present; fall back to % thresholds.
-				const sev = typeof fable.severity === 'string' ? fable.severity : null;
+				const sev = typeof f.severity === 'string' ? f.severity : null;
 				let state;
 				if (sev) {
 					state = sev === 'normal' ? 'normal' : sev === 'warning' ? 'warn' : 'crit';
 				} else {
-					state = fableWidth >= 90 ? 'crit' : fableWidth >= 75 ? 'warn' : 'normal';
+					state = width >= 90 ? 'crit' : width >= 75 ? 'warn' : 'normal';
 				}
-				this.weeklyFableFill.classList.toggle('cc-warn', state === 'warn');
-				this.weeklyFableFill.classList.toggle('cc-crit', state === 'crit');
-				this.weeklyFableFill.classList.toggle('cc-full', fableWidth >= 99.5);
-			} else {
-				this.fablePct = null;
-				this.weeklyFableFill.style.width = '0%';
-				this.weeklyFableFill.classList.remove('cc-warn', 'cc-crit', 'cc-full');
+				fable = { pct: Math.round(f.utilization * 10) / 10, width, name: f.display_name || 'Fable', state };
 			}
 
-			this._updateMarkers();
-		}
-
-		_updateMarkers() {
-			const now = Date.now();
-
-			if (this.sessionMarker && this.sessionWindowStartMs && this.sessionResetMs) {
-				const total = this.sessionResetMs - this.sessionWindowStartMs;
-				const elapsed = Math.max(0, Math.min(total, now - this.sessionWindowStartMs));
-				const ratio = total > 0 ? elapsed / total : 0;
-				const pct = Math.max(0, Math.min(100, ratio * 100));
-				this.sessionMarker.classList.remove('cc-hidden');
-				this.sessionMarker.style.left = `${pct}%`;
-			} else if (this.sessionMarker) {
-				this.sessionMarker.classList.add('cc-hidden');
-			}
-
-			if (this.weeklyMarker && this.weeklyWindowStartMs && this.weeklyResetMs) {
-				const total = this.weeklyResetMs - this.weeklyWindowStartMs;
-				const elapsed = Math.max(0, Math.min(total, now - this.weeklyWindowStartMs));
-				const ratio = total > 0 ? elapsed / total : 0;
-				const pct = Math.max(0, Math.min(100, ratio * 100));
-				this.weeklyMarker.classList.remove('cc-hidden');
-				this.weeklyMarker.style.left = `${pct}%`;
-			} else if (this.weeklyMarker) {
-				this.weeklyMarker.classList.add('cc-hidden');
-			}
+			this.usage = { session, weekly, fable };
+			this.refreshProgressChrome();
+			this._activeView()?.render(this.usage);
 		}
 
 		tick() {
@@ -640,24 +705,8 @@
 				this._renderHeader();
 			}
 
-			// Reset countdown text + time markers
-			if (this.sessionResetMs && this.sessionUsageSpan?.textContent) {
-				const idx = this.sessionUsageSpan.textContent.indexOf('· resets in');
-				if (idx !== -1) {
-					const prefix = this.sessionUsageSpan.textContent.slice(0, idx + '· resets in '.length);
-					this.sessionUsageSpan.textContent = `${prefix}${formatResetCountdown(this.sessionResetMs)}`;
-				}
-			}
-
-			if (this.weeklyResetMs && this.weeklyUsageSpan?.textContent) {
-				const idx = this.weeklyUsageSpan.textContent.indexOf('· resets in');
-				if (idx !== -1) {
-					const prefix = this.weeklyUsageSpan.textContent.slice(0, idx + '· resets in '.length);
-					this.weeklyUsageSpan.textContent = `${prefix}${formatResetCountdown(this.weeklyResetMs)}`;
-				}
-			}
-
-			this._updateMarkers();
+			// Reset countdowns + "now" markers
+			this._activeView()?.render(this.usage);
 		}
 	}
 

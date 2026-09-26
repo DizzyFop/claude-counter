@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Claude Counter",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "browser_specific_settings": {
     "gecko": {
       "id": "{159468f6-fd52-48e0-a790-5fc68b7a1cdd}",
@@ -18,8 +18,10 @@
     "128": "icons/icon128.png",
     "256": "icons/icon256.png"
   },
+  "permissions": ["storage"],
   "action": {
     "default_title": "Claude Counter",
+    "default_popup": "src/popup/popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",

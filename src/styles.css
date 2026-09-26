@@ -8,7 +8,7 @@
 	white-space: nowrap;
 }
 
-/* Usage row: session + weekly */
+/* Bars design: a usage row inside the bottom of the message box (session + weekly) */
 .cc-usageRow {
 	position: relative;
 	z-index: 50;
@@ -124,6 +124,149 @@
 .cc-bar--usage {
 	height: 10px;
 	flex: 1;
+}
+
+/* Lines design: hairlines on the composer box, session along the top edge and weekly (plus a
+   Fable lane) along the bottom. Clipped to the box's rounded corners. */
+.cc-edges {
+	--cc-edge: 3px;
+
+	position: absolute;
+	inset: 0;
+	border-radius: inherit;
+	overflow: hidden;
+	pointer-events: none;
+	user-select: none;
+}
+
+*:hover > .cc-edges,
+.cc-edge--warn {
+	--cc-edge: 4px;
+}
+
+.cc-edge {
+	position: absolute;
+	left: 0;
+	right: 0;
+}
+
+.cc-edge--top {
+	top: 0;
+	height: var(--cc-edge);
+	background: var(--cc-track);
+	transition: height 150ms ease;
+}
+
+.cc-edge--bottom {
+	bottom: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+
+.cc-edge__lane {
+	height: var(--cc-edge);
+	background: var(--cc-track);
+	transition: height 150ms ease;
+}
+
+.cc-edge__lane--fable {
+	display: none;
+}
+
+.cc-edge--split .cc-edge__lane--fable {
+	display: block;
+}
+
+.cc-edge__fill {
+	width: 0%;
+	height: 100%;
+	background: var(--cc-fill);
+	transition: width 300ms ease, background-color 300ms ease;
+}
+
+.cc-edge__fill.cc-warn {
+	background: var(--cc-fill-warn);
+}
+
+.cc-edge__lane--fable .cc-edge__fill {
+	background: var(--cc-fill-fable);
+}
+
+.cc-edge__lane--fable .cc-edge__fill.cc-warn {
+	background: var(--cc-fill-fable-warn);
+}
+
+.cc-edge__lane--fable .cc-edge__fill.cc-crit {
+	background: var(--cc-fill-fable-crit);
+}
+
+/* "Now" in the window, sticking out past the line so it stays visible */
+.cc-edge__marker {
+	position: absolute;
+	left: 0%;
+	width: 2px;
+	margin-left: -1px;
+	background: var(--cc-marker);
+}
+
+.cc-edge--top .cc-edge__marker {
+	top: 0;
+	height: calc(var(--cc-edge) + 4px);
+}
+
+.cc-edge--bottom .cc-edge__marker {
+	bottom: 0;
+	height: calc(100% + 4px);
+}
+
+/* Labels above the box: session on the left, weekly on the right */
+.cc-edgeLabels {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: calc(100% + 4px);
+	z-index: 1;
+	display: flex;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 2px 8px;
+	border-radius: 6px;
+	pointer-events: none;
+	user-select: none;
+	transition: opacity 150ms ease, background-color 150ms ease;
+}
+
+/* Solid behind the labels while any are showing, so they read cleanly over the transcript,
+   or over claude.ai's disclaimer, which moves above the box in narrow windows. */
+*:hover > .cc-edgeLabels,
+.cc-edgeLabels--always,
+.cc-edgeLabels:has(.cc-show) {
+	background: var(--cds-page-bg);
+}
+
+.cc-edgeLabels--dim {
+	opacity: 0.6;
+}
+
+.cc-edgeLabel {
+	white-space: nowrap;
+	cursor: pointer;
+	visibility: hidden;
+	opacity: 0;
+	transition: opacity 150ms ease, visibility 150ms;
+}
+
+.cc-edgeLabel:last-child {
+	margin-left: auto;
+}
+
+*:hover > .cc-edgeLabels > .cc-edgeLabel,
+.cc-edgeLabels--always > .cc-edgeLabel,
+.cc-edgeLabel.cc-show {
+	visibility: visible;
+	opacity: 1;
+	pointer-events: auto;
 }
 
 /* Tooltips */

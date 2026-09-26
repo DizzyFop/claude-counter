@@ -20,6 +20,12 @@
 		CONTEXT_LIMIT_TOKENS: 200000
 	});
 
+	// Settings the toolbar popup changes, with their defaults. The popup loads this file too.
+	CC.SETTINGS_DEFAULTS = Object.freeze({
+		usageStyle: 'lines', // 'lines' (hairlines on the message box) or 'bars' (the original row)
+		alwaysShowLabels: false
+	});
+
 	CC.COLORS = Object.freeze({
 		PROGRESS_FILL_DARK: '#2c84db',
 		PROGRESS_FILL_LIGHT: '#5aa6ff',
@@ -27,6 +33,8 @@
 		PROGRESS_OUTLINE_LIGHT: '#bfbfbf',
 		PROGRESS_MARKER_DARK: '#ffffff',
 		PROGRESS_MARKER_LIGHT: '#111111',
+		EDGE_TRACK_DARK: 'rgba(255, 255, 255, 0.08)',
+		EDGE_TRACK_LIGHT: 'rgba(0, 0, 0, 0.08)',
 		FABLE_FILL_DARK: '#1d9e75',
 		FABLE_FILL_LIGHT: '#2bb98a',
 		FABLE_WARN_DARK: '#e0a020',

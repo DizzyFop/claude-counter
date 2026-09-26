@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<title>Claude Counter</title>
+	<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+	<h1>Claude Counter</h1>
+	<fieldset>
+		<legend>Usage display</legend>
+		<label class="setting">
+			<input type="radio" name="usageStyle" value="lines">
+			<span class="setting__name">Lines on the edges of the message box</span>
+		</label>
+		<label class="setting setting--sub">
+			<input type="checkbox" id="alwaysShowLabels">
+			<span>
+				<span class="setting__name">Always show usage text</span>
+				<span class="setting__hint">When off, it shows while you hover over the message box.</span>
+			</span>
+		</label>
+		<label class="setting">
+			<input type="radio" name="usageStyle" value="bars">
+			<span class="setting__name">Bars inside the message box (original)</span>
+		</label>
+	</fieldset>
+	<footer id="version"></footer>
+	<script src="../content/constants.js"></script>
+	<script src="popup.js"></script>
+</body>
+</html>
