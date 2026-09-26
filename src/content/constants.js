@@ -4,7 +4,8 @@
 	const CC = (globalThis.ClaudeCounter = globalThis.ClaudeCounter || {});
 
 	CC.DOM = Object.freeze({
-		CHAT_TITLE_SPLIT: '[data-testid="chat-title-split"]',
+		// claude.ai renamed chats to sessions in Sept 2026; keep the old id while that rolls out.
+		CHAT_TITLE_SPLIT: '[data-testid="session-title-split"], [data-testid="chat-title-split"]',
 		COMPOSER: '[data-cds="ChatComposer"]',
 		COMPOSER_ACTIONS: '[data-cds="ChatComposerActions"]',
 		COMPOSER_CHIN: '[data-cds="ChatComposerChin"]',
