@@ -1,8 +1,8 @@
 # Privacy Policy
 
-Last updated October 25, 2026
+Last updated October 27, 2026
 
-Claude Counter runs only on claude.ai. It has no analytics or tracking, and it doesn't send your data to the developer or anyone else.
+Sightglass for Claude runs only on claude.ai. It has no analytics or tracking, and it doesn't send your data to the developer or anyone else.
 
 ## What it reads
 

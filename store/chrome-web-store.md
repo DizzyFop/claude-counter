@@ -15,7 +15,7 @@ git archive --format=zip -o claude-counter-<version>.zip HEAD manifest.json icon
 **Description**
 
 ```
-Claude Counter adds a token count, a cache timer and your usage limits to claude.ai.
+Sightglass for Claude adds a token count, a cache timer and your usage limits to claude.ai.
 
 Token count. An approximate token count for the open conversation, with a small bar against the model's context window.
 
@@ -27,7 +27,7 @@ Click the toolbar button to keep the usage text showing, or to switch back to th
 
 It runs in your claude.ai tab and only talks to claude.ai, using the session you're signed in with.
 
-Claude Counter is open source under the MIT license and isn't affiliated with Anthropic. Based on claude-counter by she-llac.
+Sightglass for Claude is open source under the MIT license and isn't affiliated with Anthropic. Based on claude-counter by she-llac.
 https://github.com/DizzyFop/claude-counter
 ```
 
